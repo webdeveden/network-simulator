@@ -1,0 +1,121 @@
+@import 'tailwindcss';
+@import '@vue-flow/core/dist/style.css';
+@import '@vue-flow/core/dist/theme-default.css';
+@import '@vue-flow/controls/dist/style.css';
+@import '@xterm/xterm/css/xterm.css';
+
+@theme {
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --color-bg: #0a0e14;
+  --color-panel: #0f1520;
+  --color-panel-2: #141c2a;
+  --color-line: #1f2a3a;
+  --color-dim: #6b7a90;
+  --color-text: #c9d6e8;
+  --color-neon: #39ff88;
+  --color-cyan: #22d3ee;
+  --color-magenta: #ff2fd6;
+  --color-danger: #ff4d5e;
+  --color-warn: #ffc94d;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-neon) 30%, transparent);
+}
+
+.glow {
+  text-shadow: 0 0 8px color-mix(in srgb, currentColor 70%, transparent);
+}
+
+.panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-line);
+}
+
+.btn {
+  border: 1px solid var(--color-line);
+  padding: 0.35rem 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  transition: all 0.15s;
+  cursor: pointer;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--color-neon);
+  color: var(--color-neon);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--color-neon) 35%, transparent);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-primary {
+  border-color: var(--color-neon);
+  color: var(--color-neon);
+}
+
+.input {
+  background: var(--color-bg);
+  border: 1px solid var(--color-line);
+  padding: 0.3rem 0.5rem;
+  color: var(--color-text);
+  outline: none;
+  width: 100%;
+}
+.input:focus {
+  border-color: var(--color-cyan);
+}
+
+/* Vue Flow dark overrides */
+.vue-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--color-line);
+}
+.vue-flow__controls-button {
+  background: var(--color-panel);
+  border-bottom: 1px solid var(--color-line);
+  fill: var(--color-text);
+}
+.vue-flow__controls-button:hover {
+  background: var(--color-panel-2);
+}
+.vue-flow__handle {
+  width: 9px;
+  height: 9px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-neon);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.vue-flow__node:hover .vue-flow__handle,
+.vue-flow__handle.connecting {
+  opacity: 1;
+}
+.vue-flow__connection-path {
+  stroke: var(--color-neon);
+  stroke-dasharray: 4 3;
+}
+
+.scanlines::after {
+  content: '';
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(to bottom, transparent 0 2px, rgb(0 0 0 / 0.12) 2px 3px);
+  z-index: 50;
+}

@@ -1,0 +1,42 @@
+services:
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-netsim}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-netsim}
+      POSTGRES_DB: ${POSTGRES_DB:-netsim}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-netsim}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-netsim}:${POSTGRES_PASSWORD:-netsim}@db:5432/${POSTGRES_DB:-netsim}
+      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      ALLOWED_ORIGINS: "http://localhost:8090"
+    ports:
+      - "8011:8000"
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8090:80"
+
+volumes:
+  pgdata:
