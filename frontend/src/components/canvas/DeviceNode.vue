@@ -17,7 +17,7 @@ const ip = computed(() => {
 const flash = computed(() => ws.flash[props.id])
 const color = computed(
   () =>
-    ({ pc: 'text-cyan', laptop: 'text-cyan', server: 'text-magenta', switch: 'text-neon', ap: 'text-neon', router: 'text-warn', firewall: 'text-danger', patch: 'text-text', isp: 'text-cyan', modem: 'text-warn', printer: 'text-text', phone: 'text-cyan' })[
+    ({ pc: 'text-cyan', laptop: 'text-cyan', server: 'text-magenta', switch: 'text-neon', ap: 'text-neon', router: 'text-warn', firewall: 'text-danger', patch: 'text-text', isp: 'text-cyan', modem: 'text-warn', printer: 'text-text', phone: 'text-cyan', mobile: 'text-cyan' })[
       dev.value.type
     ],
 )

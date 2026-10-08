@@ -52,7 +52,8 @@ describe('balcony and custom rooms', () => {
     expect(l.bounds.maxZ).toBeGreaterThan(b.z1 - 0.01)
     expect(l.seats.length).toBeGreaterThan(1)
     const lt = l.placements.find((x) => x.deviceId === dev(t, 'LT1').id)!
-    expect(lt.station).toBe('lounge')
+    expect(lt.station).toBe('held')
+    expect(l.seats.find((x) => x.deviceId === dev(t, 'LT1').id)?.pose).toBe('sit')
     expect(roomAt(l, lt.x, lt.z - 0.1)?.id).toBe('room-b')
     // The AP is on the building's outside wall, above head height, facing the balcony.
     const ap = l.placements.find((x) => x.deviceId === dev(t, 'AP-OUT').id)!
@@ -166,5 +167,89 @@ describe('ceiling APs and deleting rooms', () => {
     const l = roomLayout(t)
     expect(l.rooms.map((r) => r.id)).not.toContain('it')
     expect(roomOf(dev(t, 'PC1'), t)).toBe('accounting')
+  })
+})
+
+describe('balcony people use real devices', () => {
+  it('seats laptops on chairs and smartphones at the railing; extras go on tables', async () => {
+    const { buildTopology } = await import('../engine/network')
+    const t = buildTopology(
+      {
+        devices: [
+          ...Array.from({ length: 7 }, (_, k) => ({ type: 'laptop' as const, name: `LT${k}`, x: 0, y: 0, room: 'room-b' })),
+          { type: 'mobile', name: 'MOB1', x: 0, y: 0, room: 'room-b' },
+        ],
+      },
+      false,
+    )
+    t.customRooms = [{ id: 'room-b', label: 'Terrace', kind: 'balcony' }]
+    const l = roomLayout(t)
+    const chairs = l.seats.filter((s) => s.pose === 'sit').length
+    const held = l.placements.filter((p) => p.station === 'held')
+    expect(held.length).toBe(chairs + 1)
+    expect(l.seats.find((s) => s.deviceId === t.devices[7].id)?.pose).toBe('stand')
+    expect(l.placements.filter((p) => p.station === 'lounge').length).toBe(7 - chairs)
+  })
+
+  it('a smartphone joins Wi-Fi like a laptop and refuses cables', async () => {
+    const { buildTopology, connect } = await import('../engine/network')
+    const { newSession, runLine } = await import('../engine/shell')
+    const t = buildTopology({ devices: [{ type: 'mobile', name: 'MOB1', x: 0, y: 0 }, { type: 'switch', name: 'SW1', x: 0, y: 0 }] }, false)
+    expect(connect(t, t.devices[0].id, t.devices[1].id)).toMatch(/wireless/)
+    const out = runLine(t, emptySimState(), newSession(t.devices[0].id), 'wifi scan').lines[0].text
+    expect(out).toMatch(/No networks/)
+  })
+})
+
+describe('admin desk in the server room', () => {
+  it('puts a PC at a desk by the door, clear of the racks', async () => {
+    const { buildTopology } = await import('../engine/network')
+    const t = buildTopology(
+      {
+        devices: [
+          { type: 'router', name: 'R1', x: 0, y: 0 },
+          { type: 'pc', name: 'ADMIN-PC', x: 0, y: 0, room: 'server' },
+          { type: 'printer', name: 'PRN', x: 0, y: 0, room: 'server' },
+        ],
+      },
+      false,
+    )
+    const l = roomLayout(t)
+    const pc = l.placements.find((p) => p.deviceId === t.devices[1].id)!
+    expect(pc.station).toBe('desk')
+    expect(roomAt(l, pc.x, pc.z - 0.1)?.id).toBe('server')
+    expect(pc.z).toBeGreaterThan(l.racks[0].z + 1) // an aisle stays in front of the racks
+    expect(roomOf(t.devices[2], t)).not.toBe('server') // printers aren't allowed in there
+    // The desk is straight ahead from the door; you walk round it to reach rack 1.
+    const door = l.rooms[0].doorX
+    expect(Math.abs(pc.x - door)).toBeLessThan(1.5)
+    const r0 = l.racks[0]
+    let p = { x: door, z: 0.8 }
+    for (let k = 0; k < 12; k++) p = collide(l, p.x, p.z, 0, -0.1) // through the door
+    for (let k = 0; k < 40; k++) p = collide(l, p.x, p.z, (r0.x - p.x) / 10, 0) // across the front
+    for (let k = 0; k < 40; k++) p = collide(l, p.x, p.z, 0, -0.1) // up to the rack
+    expect(p.z).toBeLessThan(r0.z + 1)
+  })
+})
+
+describe('starter sandbox', () => {
+  it('begins with the admin PC at the server room desk, uncabled', async () => {
+    const { starterTopology } = await import('../engine/network')
+    const t = starterTopology()
+    expect(t.devices.map((d) => [d.name, d.type])).toEqual([['ADMIN-PC', 'pc']])
+    expect(t.links).toEqual([])
+    const l = roomLayout(t)
+    const pc = l.placements.find((p) => p.deviceId === t.devices[0].id)!
+    expect(pc.station).toBe('desk')
+    expect(roomAt(l, pc.x, pc.z - 0.1)?.id).toBe('server')
+  })
+})
+
+describe('ensureAdminPc', () => {
+  it('adds ADMIN-PC to an old sandbox that has none, and leaves one alone that has it', async () => {
+    const { ensureAdminPc, buildTopology } = await import('../engine/network')
+    const t = ensureAdminPc(buildTopology({ devices: [{ type: 'pc', name: 'PC1', x: 0, y: 0 }] }, false))
+    expect(t.devices.map((d) => [d.name, d.room ?? '-'])).toEqual([['PC1', '-'], ['ADMIN-PC', 'server']])
+    expect(ensureAdminPc(t).devices).toHaveLength(2)
   })
 })

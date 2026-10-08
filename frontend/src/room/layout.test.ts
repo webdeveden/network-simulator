@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { addDevice, buildTopology, connectPorts, linkOn } from '../engine/network'
-import { BUILDING, collide, CUBE, moveDeviceInRack, portSpots, RACK, roomAt, roomLayout } from './layout'
+import { BUILDING, collide, CUBE, freeSpot, isBlocked, moveDeviceInRack, portSpots, RACK, roomAt, roomLayout } from './layout'
 
 const topo = () =>
   buildTopology({
@@ -198,5 +198,35 @@ describe('connectPorts', () => {
     expect(linkOn(t, sw.id, 'fa0/5')).toBeDefined()
     expect(connectPorts(t, pc2.id, 'eth0', sw.id, 'fa0/5')).toMatch(/already has a cable/)
     expect(connectPorts(t, pc2.id, 'eth0', sw.id, 'fa0/9')).toMatch(/Unknown port/)
+  })
+})
+
+describe('freeSpot', () => {
+  it('keeps a clear spot and moves a blocked one to the nearest clear point', () => {
+    const t = buildTopology({ devices: [] }, false)
+    for (let k = 0; k < 6; k++) addDevice(t, 'pc', 0, 0).room = 'sales'
+    const L = roomLayout(t)
+    const clear = L.spawn
+    expect(freeSpot(L, clear.x, clear.z)).toEqual(clear)
+    const o = L.obstacles.find((b) => b.maxX - b.minX > 0.5 && b.maxZ - b.minZ > 0.3)!
+    const mx = (o.minX + o.maxX) / 2
+    const mz = (o.minZ + o.maxZ) / 2
+    expect(isBlocked(L, mx, mz)).toBe(true)
+    const s = freeSpot(L, mx, mz)
+    expect(isBlocked(L, s.x, s.z)).toBe(false)
+    expect(Math.hypot(s.x - mx, s.z - mz)).toBeLessThan(2)
+  })
+
+  it('gives every device a clear spot to stand in front of', () => {
+    const t = buildTopology({ devices: [] }, false)
+    for (const room of ['it', 'sales', 'accounting']) {
+      for (let k = 0; k < 5; k++) addDevice(t, 'pc', 0, 0).room = room
+      addDevice(t, 'ap', 0, 0).room = room
+    }
+    const L = roomLayout(t)
+    for (const p of L.placements) {
+      const s = freeSpot(L, p.panel.x, p.panel.z + 1.2, { x: p.panel.x, z: p.panel.z })
+      expect(isBlocked(L, s.x, s.z)).toBe(false)
+    }
   })
 })

@@ -124,7 +124,7 @@ function onDrop(e: DragEvent) {
   const rack = ws.showRooms ? rackAt2d(ws.topo, p.x, p.y) : undefined
   const g = ws.showRooms ? groupAt(ws.topo, p.x, p.y) : undefined
   const preset = rack ? { rack: rack.index } : g && g.kind !== 'racks' ? { room: g.id } : undefined
-  ws.requestAdd(type, p.x - 48, p.y - 40, preset)
+  ws.requestAdd(type, p.x - 48, p.y - 40, preset, true)
 }
 </script>
 

@@ -53,7 +53,9 @@ watch(picked, (v) => {
 const phoneCount = computed(() => (p.value?.type === 'phone' && choice.value === 'desks' ? picked.value.length : 1))
 const cost = computed(() => {
   if (!p.value) return 0
-  return DEVICE_CATALOG[p.value.type].cost * phoneCount.value
+  // A new PC comes with an IP phone on its desk.
+  const phone = p.value.type === 'pc' && ws.palette.includes('phone') ? DEVICE_CATALOG.phone.cost : 0
+  return (DEVICE_CATALOG[p.value.type].cost + phone) * phoneCount.value
 })
 
 // The choice: 'rack:N', 'floor', 'wall:<office>', 'room:<office>', or 'desks' (phones on the ticked desks).
@@ -95,7 +97,7 @@ function confirm() {
 }
 
 // ----- adding an empty rack -----
-const rackKind = ref<'floor' | 'wall'>('wall')
+const rackKind = ref<'floor' | 'wall'>('floor')
 function confirmRack() {
   if (rackKind.value === 'floor') {
     const k = ws.addFloorRack()
@@ -125,7 +127,10 @@ watch(
 
 function confirmRoom() {
   const id = ws.addRoom(roomName.value, roomKind.value, roomColorPick.value)
-  ws.notify(`${roomLabel(ws.topo, id)} added ${roomKind.value === 'balcony' ? 'off the corridor' : 'at the east end of the building'}`)
+  if (roomKind.value === 'balcony') {
+    const n = ws.addBalconyPeople()
+    ws.notify(`${roomLabel(ws.topo, id)} added off the corridor with ${n} people out there, each with a laptop or smartphone`)
+  } else ws.notify(`${roomLabel(ws.topo, id)} added at the east end of the building`)
   ws.roomDialog = false
   roomName.value = ''
 }
@@ -161,6 +166,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
           <span><b>Balcony</b><span class="block text-[10px] text-dim">Outdoor terrace off the corridor, facing the city. People work there on laptops; put an AP out there for Wi-Fi.</span></span>
         </label>
         <input v-model="roomName" class="input" maxlength="40" :placeholder="roomKind === 'balcony' ? 'Balcony' : 'e.g. Marketing'" />
+        <p v-if="roomKind === 'balcony'" class="mt-2 text-[10px] text-dim">
+          Every lounge chair gets a person with a laptop and every railing spot a person with a smartphone: real devices you can configure ($120 and $80 each).
+        </p>
         <div class="mt-2 flex flex-wrap gap-1">
           <button
             v-for="c in SWATCHES"
@@ -200,7 +208,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
       <!-- Adding a device -->
       <template v-else-if="p">
-        <div class="mb-1 text-sm font-semibold text-neon">Add {{ DEVICE_CATALOG[p.type].label }}</div>
+        <div class="mb-1 text-sm font-semibold text-neon">
+          Add {{ DEVICE_CATALOG[p.type].label }}<span v-if="p.type === 'pc' && ws.palette.includes('phone')" class="font-normal text-dim"> + IP phone</span>
+        </div>
         <div class="mb-3 text-[10px] text-dim">
           {{ p.type === 'phone' ? 'Which desks get a phone? Tick as many as you like.' : desk ? 'Which room does it go in?' : 'Which rack does it go in?' }}
         </div>

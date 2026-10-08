@@ -171,7 +171,15 @@ function setInput(text: string) {
   term.focus()
 }
 
-defineExpose({ focus: () => term?.focus(), setInput })
+/** Types a command and presses Enter (the PuTTY tab's Open button). */
+function runCommand(text: string) {
+  buffer = text
+  redrawInput()
+  submit()
+  term.focus()
+}
+
+defineExpose({ focus: () => term?.focus(), setInput, runCommand })
 </script>
 
 <template>

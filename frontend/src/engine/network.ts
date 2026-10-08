@@ -121,6 +121,14 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
     layer: 2,
     description: "Where the ISP's line enters the building: the fiber PON port faces the ISP, the LAN ports go to your edge router. A layer 2 bridge.",
   },
+  mobile: {
+    label: 'Smartphone',
+    prefix: 'MOB',
+    cost: 80,
+    ifaces: ['wlan0'],
+    layer: 3,
+    description: 'Wireless only, like a laptop. Joins Wi-Fi with: wifi connect <ssid> <password>',
+  },
   printer: {
     label: 'Printer',
     prefix: 'PRN',
@@ -157,7 +165,9 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
   },
 }
 
-export const isHost = (d: Device) => ['pc', 'laptop', 'server', 'printer', 'phone'].includes(d.type)
+export const isHost = (d: Device) => ['pc', 'laptop', 'mobile', 'server', 'printer', 'phone'].includes(d.type)
+/** Wireless-only clients: they join Wi-Fi and never take a cable. */
+export const isWifiClient = (d: Pick<Device, 'type'>) => d.type === 'laptop' || d.type === 'mobile'
 /** Layer 2 devices that forward frames between all their links. */
 export const isBridge = (d: Device) => d.type === 'switch' || d.type === 'ap' || d.type === 'modem'
 /** Routes packets: routers, firewalls and the ISP. */
@@ -242,6 +252,25 @@ function randomMac(): string {
 
 export function emptyTopology(): Topology {
   return { devices: [], links: [] }
+}
+
+/**
+ * What a new sandbox starts with: the admin's PC at the desk in the server room,
+ * with PuTTY to SSH into the network gear you add. Nothing is cabled or addressed.
+ */
+export function starterTopology(): Topology {
+  return ensureAdminPc(emptyTopology())
+}
+
+/** Makes sure there is a PC at the server room desk (older sandboxes were saved without one). */
+export function ensureAdminPc(topo: Topology): Topology {
+  if (!topo.devices.some((d) => d.type === 'pc' && d.room === 'server')) {
+    const taken = topo.devices.some((d) => d.name === 'ADMIN-PC')
+    const pc = createDevice('pc', taken ? nextName(topo, 'pc') : 'ADMIN-PC', 60, 80)
+    pc.room = 'server'
+    topo.devices.push(pc)
+  }
+  return topo
 }
 
 export function nextName(topo: Topology, type: DeviceType): string {
@@ -347,7 +376,7 @@ export function wifiProblem(ap: Device, ssid: string, key: string | undefined): 
  * other side is already cabled, so the cable completes a circuit.
  */
 function patchPort(topo: Topology, panel: Device, other: Device): Iface | undefined {
-  const office = other.type === 'pc' || other.type === 'laptop' || other.type === 'ap'
+  const office = other.type === 'pc' || isWifiClient(other) || other.type === 'ap'
   const front = !office
   const side = (i: Iface) => (front ? !i.name.endsWith('r') : i.name.endsWith('r'))
   const free = panel.ifaces.filter((i) => side(i) && !linkOn(topo, panel.id, i.name))
@@ -374,7 +403,8 @@ export function connect(topo: Topology, aId: string, bId: string, choice: CableC
   )
   if (already) return `${a.name} and ${b.name} are already connected`
   for (const d of [a, b])
-    if (d.type === 'laptop' && choice !== 'console') return `${d.name} is a laptop: it joins over Wi-Fi (wifi connect <ssid> <password>), not by cable`
+    if (isWifiClient(d) && (choice !== 'console' || d.type === 'mobile'))
+      return `${d.name} is wireless: it joins over Wi-Fi (wifi connect <ssid> <password>), not by cable`
   if (choice === 'console') {
     const pc = [a, b].find((d) => d.ifaces.some((i) => i.name === 'com1'))
     const gear = [a, b].find((d) => d.ifaces.some((i) => i.name === 'con0'))

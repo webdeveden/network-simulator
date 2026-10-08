@@ -8,9 +8,10 @@ import type { Device, DeviceType, Topology } from '../engine/types'
 
 /**
  * rack: in a rack · desk: in a cubicle · printer: printer stand · phone: on a PC's desk ·
- * lounge: balcony table · ceiling: AP on an office ceiling · wall: AP on the outside wall by a balcony.
+ * lounge: balcony table · ceiling: AP on an office ceiling · wall: AP on the outside wall by a balcony ·
+ * held: a laptop or smartphone used by a person on a balcony.
  */
-export type Station = 'rack' | 'desk' | 'printer' | 'phone' | 'lounge' | 'ceiling' | 'wall'
+export type Station = 'rack' | 'desk' | 'printer' | 'phone' | 'lounge' | 'ceiling' | 'wall' | 'held'
 
 export interface PortSpot {
   iface: string
@@ -30,6 +31,8 @@ export interface Placement {
   /** Front panel centre, world coordinates. */
   panel: { x: number; y: number; z: number; w: number; h: number }
   ports: PortSpot[]
+  /** Desk top height, for desks that aren't the standard office height (the server room's standing desk). */
+  deskH?: number
 }
 
 /** Axis-aligned footprint on the floor, for collisions. */
@@ -96,11 +99,19 @@ export function defaultOffice(topo: Topology): RoomId {
 export const officesOf = (topo: Topology) => roomsOf(topo).filter((r) => r.kind === 'office')
 
 /** Device types that can go out on a balcony: wireless gear. */
-const BALCONY_TYPES: DeviceType[] = ['ap', 'laptop']
+const BALCONY_TYPES: DeviceType[] = ['ap', 'laptop', 'mobile']
 
 /** Rooms a desk device may go in: offices, plus balconies for wireless gear. */
+/** Device types that can sit at the admin desks in the server room. */
+const ADMIN_DESK_TYPES: DeviceType[] = ['pc', 'laptop']
+
 export function deskRoomsFor(topo: Topology, type: DeviceType): RoomDef[] {
-  return roomsOf(topo).filter((r) => r.kind === 'office' || (r.kind === 'balcony' && BALCONY_TYPES.includes(type)))
+  return roomsOf(topo).filter(
+    (r) =>
+      r.kind === 'office' ||
+      (r.kind === 'balcony' && BALCONY_TYPES.includes(type)) ||
+      (r.kind === 'racks' && ADMIN_DESK_TYPES.includes(type)),
+  )
 }
 
 export interface Room {
@@ -135,14 +146,19 @@ export interface RoomLayout {
   obstacles: Box2[]
   bounds: Box2
   spawn: { x: number; z: number }
-  /** Balcony people (decoration), facing the view: on lounge chairs with laptops, or standing at the railing. */
-  seats: { x: number; z: number; pose: 'sit' | 'stand' }[]
+  /**
+   * Balcony spots, facing the view: lounge chairs and places at the railing. A spot
+   * with a device has a person using it (a laptop on their lap, a smartphone in hand).
+   */
+  seats: { x: number; z: number; pose: 'sit' | 'stand'; deviceId?: string }[]
   /** Starting view: close up in front of rack 1 (or the first cubicle). */
   home: { x: number; z: number; look: [number, number, number]; rack?: number }
 }
 
 export const RACK = { w: 0.6, h: 2.0, d: 0.9, gap: 0.12, perRow: 7, rowPitch: 2.8 }
 export const DESK = { w: 1.2, h: 0.75, d: 0.7, gap: 0.3 }
+/** The admin desk in the server room is a standing desk: no chair, worked at standing up. */
+export const ADMIN_DESK_H = 1.05
 export const CUBE = { w: 1.7, d: 1.75, wallH: 1.25, wallT: 0.05, perRow: 4, aisle: 1.4 }
 export const BUILDING = { corridor: 2.6, wallT: 0.1, door: 1.3, height: 3.1, minDepth: 6.5 }
 /** Fixed room widths (sized for a full row), so a busy room never pushes its neighbours. */
@@ -186,6 +202,7 @@ const PANEL: Record<DeviceType, { w: number; h: number }> = {
   modem: { w: 0.44, h: 0.06 },
   printer: { w: 0.5, h: 0.32 },
   phone: { w: 0.2, h: 0.05 },
+  mobile: { w: 0.075, h: 0.012 }, // lying flat on a desk; held upright on a balcony
 }
 
 export const panelHeight = (type: DeviceType) => PANEL[type].h
@@ -197,7 +214,7 @@ export function rackHasRoom(heights: number[], rack = 0): boolean {
 }
 
 /** Devices that live in offices (desks, printer stands, on a desk) instead of in racks. */
-export const onDesk = (d: Pick<Device, 'type'>) => ['pc', 'laptop', 'ap', 'printer', 'phone'].includes(d.type)
+export const onDesk = (d: Pick<Device, 'type'>) => ['pc', 'laptop', 'mobile', 'ap', 'printer', 'phone'].includes(d.type)
 
 /** A room's colour: the one the player picked, or the default. */
 export function roomColor(topo: Topology, id: RoomId): string {
@@ -238,7 +255,7 @@ export function portSpots(d: Device): PortSpot[] {
   const consoles = of('console')
   const at = (iface: string, x: number, y: number): PortSpot => ({ iface, x, y })
   if (d.type === 'pc') return [...copper.map((n) => at(n, 0, 0.06)), ...consoles.map((n) => at(n, 0, -0.02))]
-  if (d.type === 'laptop' || d.type === 'isp') return []
+  if (d.type === 'laptop' || d.type === 'mobile' || d.type === 'isp') return []
   if (d.type === 'phone') return copper.map((n) => at(n, n === 'pc' ? 0.035 : 0.077, 0))
   if (d.type === 'printer') return copper.map((n) => at(n, 0.18, -0.09))
   if (d.type === 'patch') {
@@ -321,6 +338,23 @@ export function roomLayout(topo: Topology): RoomLayout {
     racks.push({ index: k, kind: 'floor', room: 'server', name: `Rack ${k + 1}`, x, z, deviceIds: [] })
     obstacles.push({ minX: x - RACK.w / 2, maxX: x + RACK.w / 2, minZ: z - RACK.d, maxZ: z })
   }
+  // Admin desks in the server room: side by side in the middle of the room, straight
+  // ahead as you come in the door, with the racks behind them. Walk round the sides
+  // to reach the racks.
+  const adminDesks = topo.devices.filter((d) => ADMIN_DESK_TYPES.includes(d.type) && roomOf(d, topo) === 'server')
+  const pitch = DESK.w + 0.1
+  const deskXs = [-0.5, 0.5, -1.5, 1.5]
+    .map((k) => server.doorX + k * pitch)
+    .filter((x) => x - DESK.w / 2 >= server.x0 + 0.1 && x + DESK.w / 2 <= server.x1 - 0.1)
+  adminDesks.forEach((d, k) => {
+    const x = deskXs[k % deskXs.length]
+    const z = -1.75 // front edge, facing the door; the desk's back is towards the racks
+    const p = PANEL[d.type]
+    const px = d.type === 'pc' ? x - DESK.w / 2 + 0.2 : x
+    const pz = d.type === 'laptop' ? z - 0.2 : z - 0.12
+    placements.push({ deviceId: d.id, station: 'desk', x, z, deskH: ADMIN_DESK_H, panel: { x: px, y: ADMIN_DESK_H + p.h / 2, z: pz, ...p }, ports: portSpots(d) })
+    obstacles.push({ minX: x - DESK.w / 2, maxX: x + DESK.w / 2, minZ: z - DESK.d, maxZ: z })
+  })
   let depth = Math.max(BUILDING.minDepth, ...racks.map((r) => -(r.z - RACK.d) + 1))
   // Offices with wall racks need room on the back wall behind the deepest cubicles.
   const wallSpace = (id: RoomId) => (wallRacks.some((w) => w.room === id) ? WALL_RACK.d + 1.1 : 0)
@@ -331,7 +365,7 @@ export function roomLayout(topo: Topology): RoomLayout {
     return h && (h.type === 'pc' || h.type === 'laptop') ? h : undefined
   }
   // APs aren't on desks: on the ceiling in offices, on the outside wall by balconies.
-  const inCubicle = (d: Device) => d.type === 'pc' || d.type === 'laptop' || (d.type === 'phone' && !deskHost(d))
+  const inCubicle = (d: Device) => d.type === 'pc' || d.type === 'laptop' || d.type === 'mobile' || (d.type === 'phone' && !deskHost(d))
 
   // Offices: one cubicle per desk device, in rows facing the door (+z), deeper rows behind.
   const cubicles: Cubicle[] = []
@@ -349,7 +383,7 @@ export function roomLayout(topo: Topology): RoomLayout {
       const p = PANEL[d.type]
       // A PC tower stands on the left of the desk next to its monitor; laptops and APs sit in the middle.
       const px = d.type === 'pc' ? x - DESK.w / 2 + 0.2 : x
-      const pz = d.type === 'laptop' ? z - 0.2 : z - 0.12
+      const pz = d.type === 'laptop' || d.type === 'mobile' ? z - 0.2 : z - 0.12
       placements.push({ deviceId: d.id, station: 'desk', x, z, panel: { x: px, y: DESK.h + p.h / 2, z: pz, ...p }, ports: portSpots(d) })
       const last = col === cols - 1 || k === here.length - 1
       cubicles.push({ deviceId: d.id, x, back, rightWall: last })
@@ -395,18 +429,6 @@ export function roomLayout(topo: Topology): RoomLayout {
     obstacles.push({ minX: b.x0, maxX: b.x1, minZ: b.z1 - t, maxZ: b.z1 + t })
     obstacles.push({ minX: b.x0 - t, maxX: b.x0 + t, minZ: b.z0, maxZ: b.z1 })
     obstacles.push({ minX: b.x1 - t, maxX: b.x1 + t, minZ: b.z0, maxZ: b.z1 })
-    // Wireless gear and laptops on small tables by the wall, facing the view.
-    const T = BALCONY.table
-    topo.devices
-      .filter((d) => onDesk(d) && d.type !== 'ap' && !deskHost(d) && roomOf(d, topo) === r.id)
-      .forEach((d, k) => {
-        const tx = b.x0 + 0.9 + k * 1.5
-        const tz = b.z0 + 0.4 + T.d
-        const p = PANEL[d.type]
-        const pz = d.type === 'laptop' ? tz - 0.2 : tz - 0.12
-        placements.push({ deviceId: d.id, station: 'lounge', x: tx, z: tz, panel: { x: tx, y: T.h + p.h / 2, z: pz, ...p }, ports: portSpots(d) })
-        obstacles.push({ minX: tx - T.w / 2, maxX: tx + T.w / 2, minZ: tz - T.d, maxZ: tz })
-      })
     // APs on the building's outside wall, beside the balcony door, facing the balcony.
     topo.devices
       .filter((d) => d.type === 'ap' && roomOf(d, topo) === r.id)
@@ -416,23 +438,53 @@ export function roomLayout(topo: Topology): RoomLayout {
         const p = PANEL.ap
         placements.push({ deviceId: d.id, station: 'wall', x, z, panel: { x, y: 2.35, z, ...p }, ports: portSpots(d) })
       })
-    // Lounge chairs where people sit with laptops, enjoying the city: a row by the
-    // railing and a staggered row behind it. Between the front chairs, people stand
-    // at the railing taking in the view.
+    // Lounge chairs (a row by the railing and a staggered row behind it) and, between
+    // the front chairs, places at the railing.
+    const spots: RoomLayout['seats'] = []
     for (let sx = b.x0 + 1.1; sx < b.x1 - 0.8; sx += 2.1) {
-      seats.push({ x: sx, z: b.z1 - 1.0, pose: 'sit' })
+      spots.push({ x: sx, z: b.z1 - 1.0, pose: 'sit' })
       obstacles.push({ minX: sx - 0.35, maxX: sx + 0.35, minZ: b.z1 - 1.4, maxZ: b.z1 - 0.6 })
       const back = sx + 1.05
       if (back < b.x1 - 0.8) {
-        seats.push({ x: back, z: b.z1 - 2.5, pose: 'sit' })
+        spots.push({ x: back, z: b.z1 - 2.5, pose: 'sit' })
         obstacles.push({ minX: back - 0.35, maxX: back + 0.35, minZ: b.z1 - 2.9, maxZ: b.z1 - 2.1 })
       }
-      const rail = sx + 1.05
-      if (rail < b.x1 - 0.6) {
-        seats.push({ x: rail, z: b.z1 - 0.3, pose: 'stand' })
-        obstacles.push({ minX: rail - 0.25, maxX: rail + 0.25, minZ: b.z1 - 0.5, maxZ: b.z1 - 0.1 })
-      }
+      if (back < b.x1 - 0.6) spots.push({ x: back, z: b.z1 - 0.3, pose: 'stand' })
     }
+    // People using the balcony's laptops and smartphones: laptops on lounge chairs,
+    // smartphones at the railing (then on any free spot). The rest go on tables.
+    const users = topo.devices.filter((d) => (d.type === 'laptop' || d.type === 'mobile') && !deskHost(d) && roomOf(d, topo) === r.id)
+    const free = (pose: 'sit' | 'stand') => spots.find((s) => !s.deviceId && s.pose === pose)
+    const onTable: Device[] = []
+    for (const d of users) {
+      const spot = d.type === 'laptop' ? free('sit') : (free('stand') ?? free('sit'))
+      if (!spot) {
+        onTable.push(d)
+        continue
+      }
+      spot.deviceId = d.id
+      const p = PANEL[d.type]
+      // Panel: the laptop on the person's lap, or the phone held in front of them.
+      const panel =
+        spot.pose === 'sit'
+          ? { x: spot.x, y: 0.6, z: spot.z + 0.32, ...p }
+          : { x: spot.x + 0.17, y: 1.2, z: spot.z + 0.12, ...p }
+      placements.push({ deviceId: d.id, station: 'held', x: spot.x, z: spot.z, panel, ports: portSpots(d) })
+    }
+    for (const s of spots) if (s.pose === 'stand' && s.deviceId) obstacles.push({ minX: s.x - 0.25, maxX: s.x + 0.25, minZ: s.z - 0.2, maxZ: s.z + 0.2 })
+    seats.push(...spots)
+    // Anything else (and laptops beyond the chairs) on small tables by the wall.
+    const T = BALCONY.table
+    topo.devices
+      .filter((d) => onDesk(d) && d.type !== 'ap' && !deskHost(d) && roomOf(d, topo) === r.id && !users.includes(d) || onTable.includes(d))
+      .forEach((d, k) => {
+        const tx = b.x0 + 0.9 + k * 1.5
+        const tz = b.z0 + 0.4 + T.d
+        const p = PANEL[d.type]
+        const pz = d.type === 'laptop' || d.type === 'mobile' ? tz - 0.2 : tz - 0.12
+        placements.push({ deviceId: d.id, station: 'lounge', x: tx, z: tz, panel: { x: tx, y: T.h + p.h / 2, z: pz, ...p }, ports: portSpots(d) })
+        obstacles.push({ minX: tx - T.w / 2, maxX: tx + T.w / 2, minZ: tz - T.d, maxZ: tz })
+      })
   }
   const balconies = rooms.filter((r) => r.kind === 'balcony')
 
@@ -485,7 +537,7 @@ export function roomLayout(topo: Topology): RoomLayout {
     if (!host) continue
     const p = PANEL.phone
     const right = host.station === 'lounge' ? 0.22 : 0.45
-    const top = host.station === 'lounge' ? BALCONY.table.h : DESK.h
+    const top = host.station === 'lounge' ? BALCONY.table.h : (host.deskH ?? DESK.h)
     placements.push({ deviceId: d.id, station: 'phone', x: host.x + right, z: host.z, panel: { x: host.x + right, y: top + p.h / 2, z: host.z - 0.18, ...p }, ports: portSpots(d) })
   }
 
@@ -544,13 +596,70 @@ export function moveDeviceInRack(topo: Topology, deviceId: string, rack: number,
   return null
 }
 
-/** Moves a circle of radius r from (x, z) by (dx, dz), sliding along walls and furniture. */
-export function collide(layout: RoomLayout, x: number, z: number, dx: number, dz: number, r = 0.3): { x: number; z: number } {
-  const blocked = (px: number, pz: number) => {
-    const b = layout.bounds
-    if (px - r < b.minX || px + r > b.maxX || pz - r < b.minZ || pz + r > b.maxZ) return true
-    return layout.obstacles.some((o) => px + r > o.minX && px - r < o.maxX && pz + r > o.minZ && pz - r < o.maxZ)
+/**
+ * Deletes a rack. Its devices are re-mounted in the server room's floor racks
+ * (a new rack opens if those are full). Floor racks after it move up one place,
+ * so rack numbers stay 1, 2, 3… Returns the rack's name, or null if it doesn't exist.
+ */
+export function deleteRack(topo: Topology, index: number): string | null {
+  const rack = roomLayout(topo).racks.find((r) => r.index === index)
+  if (!rack) return null
+  for (const d of topo.devices.filter((d) => rack.deviceIds.includes(d.id))) {
+    delete d.rack
+    delete d.slot
   }
+  if (topo.rackPos) delete topo.rackPos[index]
+  if (rack.kind === 'wall') {
+    topo.wallRacks = (topo.wallRacks ?? []).filter((w) => w.id !== index)
+    return rack.name
+  }
+  const floors = roomLayout(topo).racks.filter((r) => r.kind === 'floor').length
+  for (const d of topo.devices) if (d.rack !== undefined && d.rack > index && d.rack < WALL_RACK_BASE) d.rack--
+  if (topo.rackPos) {
+    const moved: typeof topo.rackPos = {}
+    for (const [k, v] of Object.entries(topo.rackPos)) {
+      const n = Number(k)
+      moved[n > index && n < WALL_RACK_BASE ? n - 1 : n] = v
+    }
+    topo.rackPos = moved
+  }
+  topo.serverRacks = Math.max(0, floors - 1)
+  return rack.name
+}
+
+/** Moves a circle of radius r from (x, z) by (dx, dz), sliding along walls and furniture. */
+/** Whether a player of radius `r` standing at (x, z) is inside a wall, railing or piece of furniture. */
+export function isBlocked(layout: RoomLayout, x: number, z: number, r = 0.3): boolean {
+  const b = layout.bounds
+  if (x - r < b.minX || x + r > b.maxX || z - r < b.minZ || z + r > b.maxZ) return true
+  return layout.obstacles.some((o) => x + r > o.minX && x - r < o.maxX && z + r > o.minZ && z - r < o.maxZ)
+}
+
+/**
+ * The free spot nearest (x, z) where the player can stand: (x, z) itself when it's clear,
+ * otherwise the closest clear point on growing rings around it. If `near` is given, ties
+ * go to the point closest to it (e.g. the device you want to look at).
+ */
+export function freeSpot(layout: RoomLayout, x: number, z: number, near?: { x: number; z: number }): { x: number; z: number } {
+  if (!isBlocked(layout, x, z)) return { x, z }
+  for (let ring = 0.15; ring <= 4; ring += 0.15) {
+    let best: { x: number; z: number; d: number } | null = null
+    const steps = Math.ceil((ring * Math.PI * 2) / 0.15)
+    for (let k = 0; k < steps; k++) {
+      const a = (k / steps) * Math.PI * 2
+      const px = x + Math.cos(a) * ring
+      const pz = z + Math.sin(a) * ring
+      if (isBlocked(layout, px, pz)) continue
+      const d = near ? Math.hypot(px - near.x, pz - near.z) : 0
+      if (!best || d < best.d) best = { x: px, z: pz, d }
+    }
+    if (best) return { x: best.x, z: best.z }
+  }
+  return { ...layout.spawn }
+}
+
+export function collide(layout: RoomLayout, x: number, z: number, dx: number, dz: number, r = 0.3): { x: number; z: number } {
+  const blocked = (px: number, pz: number) => isBlocked(layout, px, pz, r)
   let nx = x
   let nz = z
   if (!blocked(x + dx, z)) nx = x + dx

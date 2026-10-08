@@ -148,3 +148,46 @@ export function tidyByRoom(topo: Topology) {
     d.y = -160
   }
 }
+
+/**
+ * Where a newly added device should go on the 2D map, so it lands inside its own
+ * room box instead of stretching it: under the other devices of its rack, next to
+ * its PC (desk phones), or in the first free cell of its room's grid. A room with
+ * nothing in it yet starts to the right of everything else.
+ */
+export function spotFor(topo: Topology, deviceId: string): { x: number; y: number } | null {
+  const d = topo.devices.find((x) => x.id === deviceId)
+  if (!d || isOutside(d)) return null
+  const others = topo.devices.filter((x) => x.id !== d.id && !isOutside(x))
+  const taken = (x: number, y: number) => others.some((o) => Math.abs(o.x - x) < 70 && Math.abs(o.y - y) < 60)
+
+  const rack = roomLayout(topo).racks.find((r) => r.deviceIds.includes(d.id))
+  if (rack) {
+    const mates = rack.deviceIds.filter((id) => id !== d.id).map((id) => others.find((o) => o.id === id)!).filter(Boolean)
+    if (!mates.length) return topo.rackPos?.[rack.index] ?? rightOfEverything(topo, d.id)
+    const x = mates[0].x
+    let y = Math.max(...mates.map((m) => m.y)) + 120
+    while (taken(x, y)) y += 120
+    return { x, y }
+  }
+
+  const host = d.deskOf ? others.find((o) => o.id === d.deskOf) : undefined
+  if (host && !taken(host.x + 120, host.y)) return { x: host.x + 120, y: host.y }
+
+  const room = roomOf(d, topo)
+  const mates = others.filter((o) => roomOf(o, topo) === room)
+  if (!mates.length) return rightOfEverything(topo, d.id)
+  const x0 = Math.min(...mates.map((m) => m.x))
+  const y0 = Math.min(...mates.map((m) => m.y))
+  for (let k = 0; k < 90; k++) {
+    const x = x0 + (k % 3) * 130
+    const y = y0 + Math.floor(k / 3) * 120
+    if (!taken(x, y)) return { x, y }
+  }
+  return { x: x0, y: y0 }
+}
+
+function rightOfEverything(topo: Topology, exclude: string): { x: number; y: number } {
+  const boxes = roomGroups(topo, exclude)
+  return { x: Math.max(40, ...boxes.map((g) => g.x + g.w + 90 - 22)), y: 80 }
+}

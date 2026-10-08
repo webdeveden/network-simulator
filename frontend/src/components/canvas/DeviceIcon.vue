@@ -16,6 +16,10 @@ defineProps<{ type: DeviceType; size?: number }>()
       <path d="M3 23h26l-2-4H5z" />
       <path d="M13 13.5a4 4 0 0 1 6 0M14.6 15.6a1.6 1.6 0 0 1 2.8 0" stroke-width="1.1" />
     </template>
+    <template v-else-if="type === 'mobile'">
+      <rect x="10" y="3" width="12" height="26" rx="2.5" />
+      <path d="M14 6h4M15 26h2" stroke-width="1.4" />
+    </template>
     <template v-else-if="type === 'ap'">
       <rect x="5" y="19" width="22" height="7" rx="1.5" />
       <path d="M10 19v-8M22 19v-8" />

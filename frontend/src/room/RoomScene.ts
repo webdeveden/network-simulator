@@ -9,7 +9,7 @@ import { buildCity } from './city'
 import { CABLES, getDevice, linkActive, linkOn, portKind } from '../engine/network'
 import type { Device, Link, Topology } from '../engine/types'
 import { Hands } from './hands'
-import { BALCONY, BUILDING, collide, CUBE, DESK, PRINTER, MOUNT_GAP, MOUNT_TOP, panelHeight, roomColor, WALL_RACK, RACK, rackHasRoom, roomLayout, TRAY_Y, roomAt, type Cubicle, type Placement, type RackSpot, type Room, type RoomId, type RoomLayout, type Wall } from './layout'
+import { BALCONY, BUILDING, collide, CUBE, freeSpot, isBlocked, DESK, PRINTER, MOUNT_GAP, MOUNT_TOP, panelHeight, roomColor, WALL_RACK, RACK, rackHasRoom, roomLayout, TRAY_Y, roomAt, type Cubicle, type Placement, type RackSpot, type Room, type RoomId, type RoomLayout, type Wall } from './layout'
 
 export type Target =
   | { kind: 'port'; deviceId: string; iface: string }
@@ -46,6 +46,8 @@ export interface RoomEvents {
   moveToRoom(deviceId: string, room: RoomId): void
   /** The player walked into another room (or the corridor). */
   location(label: string): void
+  /** The player turned (heading in radians; 0 = facing north, -z). */
+  heading?(h: number): void
   /** Zoomed out to the aerial overview (true) or back to walking (false). */
   overview?(on: boolean): void
   /** What a click would do in the overview ("Click: walk into Sales"), or null. */
@@ -148,10 +150,15 @@ export class RoomScene {
   private carryColor = '#39ff88'
   private packet: { curve: THREE.CatmullRomCurve3; start: number; dur: number; forward: boolean; mesh: THREE.Mesh } | null = null
   private flash: Record<string, 'ok' | 'err' | 'hit'> = {}
-  private selection: { kind: 'device' | 'link'; id: string } | null = null
+  private selection: { kind: 'device' | 'link' | 'rack'; id: string } | null = null
 
   private keys = new Set<string>()
   private where = ''
+  private lastHeading = Infinity
+  /** Street-View style navigation: a heading to swing round to, a floor spot to walk to, held pad buttons. */
+  private turnGoal: number | null = null
+  private walkGoal: { x: number; z: number } | null = null
+  private pad = new Set<'fwd' | 'back' | 'left' | 'right'>()
   /** You: feet position, facing (heading 0 looks down -z) and how far you look up or down. */
   private player = { pos: new THREE.Vector3(), heading: 0, pitch: 0 }
   private hands = new Hands()
@@ -371,14 +378,83 @@ export class RoomScene {
     const r = this.layout.rooms.find((x) => x.id === id)
     if (!r) return
     let spot: { x: number; z: number; heading: number }
-    if (r.kind === 'racks' && this.layout.racks.some((k) => k.room === r.id)) {
-      const h = this.layout.home
-      spot = { x: h.x, z: h.z, heading: headingTo(h.x, h.z, h.look[0], h.look[2]) }
-      if (h.rack !== undefined) this.openDoors.add(h.rack)
-    } else if (r.kind === 'balcony') spot = { x: r.doorX, z: r.z0 + 1.0, heading: Math.PI }
+    // Server room: just inside the door, looking in: admin desks ahead, racks behind them.
+    if (r.kind === 'racks') spot = { x: r.doorX, z: -0.6, heading: 0 }
+    else if (r.kind === 'balcony') spot = { x: r.doorX, z: r.z0 + 1.0, heading: Math.PI }
     else spot = { x: r.doorX, z: -1.0, heading: 0 }
     if (this.mode === 'overview') return this.exitOverview(spot)
     this.placePlayer(spot.x, spot.z, spot.heading)
+    // Server room: look down a little so the admin desk ahead is in full view.
+    if (r.kind === 'racks') this.player.pitch = -0.32
+  }
+
+  /** Takes you in front of a device, facing it (looking up at ceiling APs, down at laps). */
+  /** Stands in front of a rack, facing it, with its door open. */
+  goToRack(index: number) {
+    const r = this.layout.racks.find((x) => x.index === index)
+    if (!r) return
+    this.openDoors.add(index)
+    const spot = freeSpot(this.layout, r.x, r.z + 1.1, { x: r.x, z: r.z })
+    const heading = headingTo(spot.x, spot.z, r.x, r.z)
+    if (this.mode === 'overview') return this.exitOverview({ x: spot.x, z: spot.z, heading })
+    this.placePlayer(spot.x, spot.z, heading)
+    this.player.pitch = r.kind === 'wall' ? -0.15 : -0.1
+  }
+
+  goToDevice(id: string) {
+    const p = this.layout.placements.find((x) => x.deviceId === id)
+    if (!p) return
+    const y = p.panel.y
+    // Every device faces +z: stand in front of it (further back for things up high).
+    const back = p.station === 'ceiling' || p.station === 'wall' ? 2.2 : p.station === 'rack' ? 1.0 : 1.2
+    // Ceiling APs hang just inside the office door: stand further in the room, looking up at it.
+    const sz = p.station === 'ceiling' ? p.panel.z - 1.6 : p.panel.z + back
+    const spot = freeSpot(this.layout, p.panel.x, sz, { x: p.panel.x, z: p.panel.z })
+    if (p.rack !== undefined) this.openDoors.add(p.rack)
+    const go = () => {
+      this.placePlayer(spot.x, spot.z, headingTo(spot.x, spot.z, p.panel.x, p.panel.z))
+      this.player.pitch = Math.max(-1.0, Math.min(1.0, Math.atan2(y - EYE, Math.hypot(spot.x - p.panel.x, spot.z - p.panel.z))))
+    }
+    if (this.mode === 'overview') {
+      this.exitOverview({ x: spot.x, z: spot.z, heading: headingTo(spot.x, spot.z, p.panel.x, p.panel.z) })
+      return
+    }
+    go()
+  }
+
+  /** Swing round smoothly to face this heading (0 = north). */
+  turnTo(heading: number) {
+    // Shortest way round.
+    let d = (heading - this.player.heading) % (Math.PI * 2)
+    if (d > Math.PI) d -= Math.PI * 2
+    if (d < -Math.PI) d += Math.PI * 2
+    this.turnGoal = this.player.heading + d
+  }
+
+  /** Turn by an angle right now (dragging the compass). */
+  turnBy(delta: number) {
+    this.turnGoal = null
+    this.player.heading += delta
+  }
+
+  /** Compass arrow pad: held buttons move you until released. */
+  setPad(dir: 'fwd' | 'back' | 'left' | 'right', on: boolean) {
+    if (on) {
+      this.pad.add(dir)
+      this.walkGoal = null
+      this.turnGoal = null
+    } else this.pad.delete(dir)
+  }
+
+  /** Walk to a floor spot in a straight line (walls and furniture stop you). */
+  walkTo(x: number, z: number) {
+    this.walkGoal = { x, z }
+    this.turnGoal = null
+  }
+
+  /** Which way you face, in radians clockwise from north (north = towards the back of the building). */
+  get compassHeading() {
+    return -this.player.heading
   }
 
   /** Rooms you can go to, in building order. */
@@ -442,6 +518,7 @@ export class RoomScene {
       else if (p.station === 'phone') this.buildPhone(d, p)
       else if (p.station === 'lounge') this.buildLounge(d, p)
       else if (p.station === 'ceiling') this.buildCeilingAp(d, p)
+      else if (p.station === 'held') this.buildHeld(d, p)
       else if (p.station === 'wall') this.buildWallAp(d, p)
       else this.buildDesk(d, p)
     }
@@ -452,9 +529,12 @@ export class RoomScene {
       this.resetView()
       this.placed = true
     } else {
-      // New furniture where you stand: step out to the corridor.
+      // New furniture where you stand: step aside to the nearest free spot (not back to the start).
       const { x, z } = this.player.pos
-      if (collide(this.layout, x - 0.01, z, 0.01, 0).x !== x) this.placePlayer(this.layout.spawn.x, this.layout.spawn.z, -Math.PI / 2)
+      if (isBlocked(this.layout, x, z)) {
+        const spot = freeSpot(this.layout, x, z)
+        this.player.pos.set(spot.x, 0, spot.z)
+      }
     }
     this.applyHighlights()
     this.hover = null
@@ -466,7 +546,7 @@ export class RoomScene {
     this.applyHighlights()
   }
 
-  setSelection(sel: { kind: 'device' | 'link'; id: string } | null) {
+  setSelection(sel: { kind: 'device' | 'link' | 'rack'; id: string } | null) {
     this.selection = sel
     this.applyHighlights()
   }
@@ -612,6 +692,13 @@ export class RoomScene {
       e.preventDefault()
       return
     }
+    if (e.button === 0 && !this.hover && this.pointer) {
+      // Clicking the floor walks you there, like Street View's ground arrows.
+      this.raycaster.far = 40
+      this.raycaster.setFromCamera(this.pointer, this.camera)
+      const floor = this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3())
+      if (floor && floor.distanceTo(this.player.pos) < 15) this.walkTo(floor.x, floor.z)
+    }
     if (e.button === 0) {
       const t = this.hover
       // The hand only comes out for cable work: taking, plugging or unplugging at a port.
@@ -738,7 +825,11 @@ export class RoomScene {
     else if (k === 'f' && !e.repeat) {
       if (this.controls.isLocked) this.controls.unlock()
       else this.controls.lock()
-    } else this.keys.add(e.code)
+    } else {
+      this.keys.add(e.code)
+      this.walkGoal = null
+      this.turnGoal = null
+    }
     if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault()
   }
 
@@ -763,12 +854,14 @@ export class RoomScene {
     if (this.mode === 'overview') this.orbit.update()
     if (this.mode === 'walk' && this.roomActive()) this.move(dt)
     else if (this.mode !== 'walk' || !this.roomActive()) this.keys.clear()
+    if (this.mode === 'walk') this.navigate(dt)
     if (this.mode === 'walk') this.updateCamera()
     this.animateDoors(dt)
     this.pick()
     this.animateCarry()
     this.animatePacket()
     const where = this.mode !== 'walk' ? 'Overview' : (roomAt(this.layout, this.player.pos.x, this.player.pos.z)?.label ?? 'Corridor')
+    if (Math.abs(this.player.heading - this.lastHeading) > 0.01) this.events.heading?.((this.lastHeading = this.player.heading))
     if (where !== this.where) this.events.location((this.where = where))
     this.hands.update(this.camera, dt, this.controls.isLocked ? null : this.pointer)
     this.renderer.autoClear = true
@@ -798,6 +891,41 @@ export class RoomScene {
       return
     }
     this.camera.quaternion.copy(this.eyePose().quat)
+  }
+
+  /** Compass pad, smooth turns and click-to-walk. */
+  private navigate(dt: number) {
+    const p = this.pad
+    const turn = (p.has('left') ? 1 : 0) - (p.has('right') ? 1 : 0)
+    if (turn) this.player.heading += turn * TURN_SPEED * dt
+    const f = (p.has('fwd') ? 1 : 0) - (p.has('back') ? 1 : 0)
+    if (f) this.step(f * 2.2 * dt, 0)
+    if (this.turnGoal !== null) {
+      const d = this.turnGoal - this.player.heading
+      if (Math.abs(d) < 0.01) {
+        this.player.heading = this.turnGoal
+        this.turnGoal = null
+      } else this.player.heading += d * Math.min(1, dt * 7)
+    }
+    if (this.walkGoal) {
+      const g = this.walkGoal
+      const dx = g.x - this.player.pos.x
+      const dz = g.z - this.player.pos.z
+      const dist = Math.hypot(dx, dz)
+      if (dist < 0.12) this.walkGoal = null
+      else {
+        // Face the way you walk, then go; stop if something is in the way.
+        this.player.heading += ((headingTo(0, 0, dx, dz) - this.player.heading + Math.PI * 3) % (Math.PI * 2) - Math.PI) * Math.min(1, dt * 8)
+        const before = this.player.pos.clone()
+        const s = Math.min(dist, 3 * dt)
+        const steps = Math.ceil(s / 0.1)
+        for (let k = 0; k < steps; k++) {
+          const q = collide(this.layout, this.player.pos.x, this.player.pos.z, (dx / dist) * (s / steps), (dz / dist) * (s / steps))
+          this.player.pos.set(q.x, 0, q.z)
+        }
+        if (this.player.pos.distanceTo(before) < s * 0.3) this.walkGoal = null
+      }
+    }
   }
 
   private move(dt: number) {
@@ -1359,13 +1487,13 @@ export class RoomScene {
       b.position.set(x, 0.75, r.z1 - 0.35)
       this.world.add(p, b)
     }
-    for (const seat of this.layout.seats.filter((s) => s.x > r.x0 && s.x < r.x1 && s.z > r.z0 && s.z < r.z1))
-      if (seat.pose === 'stand') this.buildStandingPerson(seat.x, seat.z)
-      else this.buildSittingPerson(seat.x, seat.z)
+    // Free lounge chairs stay empty; people are drawn with the device they use (buildHeld).
+    for (const seat of this.layout.seats.filter((s) => !s.deviceId && s.pose === 'sit' && s.x > r.x0 && s.x < r.x1 && s.z > r.z0 && s.z < r.z1))
+      this.buildLoungeChair(seat.x, seat.z)
   }
 
   /** Someone standing at the railing, forearms on it, looking out at the city (some with a coffee). */
-  private buildStandingPerson(x: number, z: number) {
+  private buildStandingPerson(x: number, z: number, holdingPhone = false) {
     const k = Math.floor(Math.abs(x * 5.1 + 3)) % 4
     const shirt = new THREE.MeshStandardMaterial({ color: [0xe67e22, 0x2c3e50, 0xd35400, 0x27ae60][k], roughness: 0.8 })
     const skin = new THREE.MeshStandardMaterial({ color: [0xc68642, 0x8d5524, 0xf1c27d, 0x6b4423][k], roughness: 0.8 })
@@ -1383,21 +1511,84 @@ export class RoomScene {
     box(0.4, 0.6, 0.22, shirt, 0, 1.17, 0.02, 0.08)
     box(0.2, 0.24, 0.22, skin, 0, 1.6, 0.06)
     box(0.22, 0.08, 0.24, hair, 0, 1.74, 0.05)
-    // Forearms resting on the railing in front.
+    // Left forearm on the railing; the right hand either on the railing too or holding a phone up.
     box(0.09, 0.09, 0.34, shirt, -0.2, 1.04, 0.18)
-    box(0.09, 0.09, 0.34, shirt, 0.2, 1.04, 0.18)
-    if (k % 2 === 0) box(0.06, 0.1, 0.06, new THREE.MeshStandardMaterial({ color: 0xf5f5f5 }), 0.2, 1.12, 0.34) // coffee cup
+    if (holdingPhone) {
+      box(0.09, 0.09, 0.3, shirt, 0.2, 1.12, 0.12, 0.6) // forearm raised towards the face
+      box(0.08, 0.09, 0.08, skin, 0.2, 1.2, 0.3) // hand
+    } else {
+      box(0.09, 0.09, 0.34, shirt, 0.2, 1.04, 0.18)
+      if (k % 2 === 0) box(0.06, 0.1, 0.06, new THREE.MeshStandardMaterial({ color: 0xf5f5f5 }), 0.2, 1.12, 0.34) // coffee cup
+    }
     g.position.set(x, 0, z - 0.2)
     this.world.add(g)
   }
 
-  /** A person on a lounge chair with a laptop on their lap, looking out at the city. */
+  private buildLoungeChair(x: number, z: number) {
+    const chair = new THREE.MeshStandardMaterial({ color: 0x3a4658, roughness: 0.9 })
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.08, 0.7), chair)
+    seat.position.set(x, 0.38, z)
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.6, 0.06), chair)
+    back.position.set(x, 0.66, z - 0.36)
+    back.rotation.x = -0.35
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.5), chair)
+    base.position.set(x, 0.17, z)
+    this.world.add(seat, back, base)
+  }
+
+  /**
+   * A laptop or smartphone used by someone on the balcony: the person and the real
+   * device (selectable, E opens its console, Wi-Fi arcs start from it).
+   */
+  private buildHeld(d: Device, p: Placement) {
+    const seat = this.layout.seats.find((s) => s.deviceId === d.id)
+    if (!seat) return
+    if (seat.pose === 'sit') {
+      this.buildLoungeChair(seat.x, seat.z)
+      this.buildSittingPerson(seat.x, seat.z)
+      if (d.type === 'laptop') {
+        // The laptop on their lap, screen towards them: build it facing +z, then turn it round.
+        const lap = new THREE.Group()
+        const local: Placement = { ...p, x: 0, z: 0, panel: { ...p.panel, x: 0, y: 0, z: 0 } }
+        this.buildLaptop(lap, d, local)
+        lap.rotation.y = Math.PI
+        lap.position.set(seat.x, 0.6, seat.z + 0.08)
+        this.world.add(lap)
+        this.radios.set(d.id, new THREE.Vector3(seat.x, 0.95, seat.z + 0.3))
+      } else this.buildHeldPhone(d, new THREE.Vector3(seat.x + 0.1, 0.78, seat.z + 0.22))
+    } else {
+      this.buildStandingPerson(seat.x, seat.z, true)
+      this.buildHeldPhone(d, new THREE.Vector3(seat.x + 0.2, 1.3, seat.z + 0.16))
+    }
+  }
+
+  /** A smartphone held upright, screen towards its owner. */
+  private buildHeldPhone(d: Device, at: THREE.Vector3) {
+    const body = new THREE.MeshStandardMaterial({ color: 0x14181f, roughness: 0.4, metalness: 0.4 })
+    this.chassis.set(d.id, body)
+    const phone = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.15, 0.012), body)
+    phone.position.copy(at)
+    phone.rotation.x = 0.35
+    this.world.add(this.target(phone, { kind: 'device', deviceId: d.id }))
+    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.065, 0.13), new THREE.MeshBasicMaterial({ color: 0x9fd8ff, toneMapped: false }))
+    screen.position.set(0, 0, -0.007)
+    screen.rotation.y = Math.PI
+    phone.add(screen)
+    this.radios.set(d.id, at.clone().add(new THREE.Vector3(0, 0.1, 0)))
+  }
+
+  /** A smartphone lying on a desk or table. */
+  private buildMobileFlat(g: THREE.Group, d: Device, p: Placement) {
+    this.buildChassis(g, d, p, 0.15)
+    this.radios.set(d.id, new THREE.Vector3(p.panel.x, p.panel.y + 0.15, p.panel.z - 0.08))
+  }
+
+  /** A person on a lounge chair, working on the laptop on their lap, looking out at the city. */
   private buildSittingPerson(x: number, z: number) {
     const k = Math.floor(Math.abs(x * 13.7 + z * 5.3) * 3) % 4
     const shirt = new THREE.MeshStandardMaterial({ color: [0x2e86de, 0xc0392b, 0x16a085, 0x8e44ad][k], roughness: 0.8 })
     const skin = new THREE.MeshStandardMaterial({ color: [0x8d5524, 0xc68642, 0xe0ac69, 0x5c3a21][k], roughness: 0.8 })
     const dark = new THREE.MeshStandardMaterial({ color: 0x22262e, roughness: 0.8 })
-    const chair = new THREE.MeshStandardMaterial({ color: 0x3a4658, roughness: 0.9 })
     const g = new THREE.Group()
     const box = (w: number, h: number, d: number, m: THREE.Material, px: number, py: number, pz: number, rx = 0) => {
       const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m)
@@ -1405,9 +1596,6 @@ export class RoomScene {
       mesh.rotation.x = rx
       g.add(mesh)
     }
-    // Lounge chair: seat, sloped back (on the building side), legs.
-    box(0.62, 0.08, 0.7, chair, 0, 0.38, 0)
-    box(0.62, 0.6, 0.06, chair, 0, 0.66, -0.36, -0.35)
     // Seated person facing +z (the view): thighs forward, shins down, torso leaning back.
     box(0.36, 0.14, 0.42, dark, 0, 0.5, 0.12)
     box(0.34, 0.4, 0.13, dark, 0, 0.26, 0.36)
@@ -1417,16 +1605,6 @@ export class RoomScene {
     // Arms reaching to the laptop on the lap.
     box(0.09, 0.09, 0.34, shirt, -0.24, 0.66, 0.06)
     box(0.09, 0.09, 0.34, shirt, 0.24, 0.66, 0.06)
-    // Laptop on the lap, screen glowing.
-    box(0.32, 0.02, 0.22, dark, 0, 0.59, 0.2)
-    const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.19), new THREE.MeshBasicMaterial({ color: 0x9fd8ff, toneMapped: false }))
-    screen.position.set(0, 0.7, 0.1)
-    screen.rotation.x = -0.35
-    g.add(screen)
-    const lid = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.2, 0.012), dark)
-    lid.position.set(0, 0.7, 0.093)
-    lid.rotation.x = -0.35
-    g.add(lid)
     g.position.set(x, 0, z)
     this.world.add(g)
   }
@@ -1474,25 +1652,28 @@ export class RoomScene {
     leg.position.set(p.x, (T.h - 0.04) / 2, p.z - T.d / 2)
     g.add(top, leg)
     if (d.type === 'laptop') this.buildLaptop(g, d, p)
+    else if (d.type === 'mobile') this.buildMobileFlat(g, d, p)
     else this.buildAp(g, d, p)
     this.world.add(g)
   }
 
   private buildDesk(d: Device, p: Placement) {
     const g = new THREE.Group()
+    const H = p.deskH ?? DESK.h
     const wood = new THREE.MeshStandardMaterial({ color: 0x232a35, roughness: 0.8 })
     const top = new THREE.Mesh(new THREE.BoxGeometry(DESK.w, 0.04, DESK.d), wood)
-    top.position.set(p.x, DESK.h - 0.02, p.z - DESK.d / 2)
+    top.position.set(p.x, H - 0.02, p.z - DESK.d / 2)
     g.add(top)
     const legMat = new THREE.MeshStandardMaterial({ color: COLORS.metalLight, metalness: 0.8, roughness: 0.3 })
     for (const sx of [-1, 1])
       for (const sz of [-1, 1]) {
-        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.04, DESK.h - 0.04, 0.04), legMat)
-        leg.position.set(p.x + sx * (DESK.w / 2 - 0.04), (DESK.h - 0.04) / 2, p.z - DESK.d / 2 + sz * (DESK.d / 2 - 0.04))
+        const leg = new THREE.Mesh(new THREE.BoxGeometry(0.04, H - 0.04, 0.04), legMat)
+        leg.position.set(p.x + sx * (DESK.w / 2 - 0.04), (H - 0.04) / 2, p.z - DESK.d / 2 + sz * (DESK.d / 2 - 0.04))
         g.add(leg)
       }
     if (d.type === 'pc') this.buildPc(g, d, p, legMat)
     else if (d.type === 'laptop') this.buildLaptop(g, d, p)
+    else if (d.type === 'mobile') this.buildMobileFlat(g, d, p)
     else this.buildAp(g, d, p)
     this.world.add(g)
   }
@@ -1516,18 +1697,19 @@ export class RoomScene {
   }
 
   private buildPc(g: THREE.Group, d: Device, p: Placement, legMat: THREE.Material) {
+    const H = p.deskH ?? DESK.h
     // Monitor showing the host's prompt.
     const monitor = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.34, 0.03), new THREE.MeshStandardMaterial({ color: 0x0b0e13 }))
-    monitor.position.set(p.x + 0.15, DESK.h + 0.3, p.z - DESK.d + 0.18)
+    monitor.position.set(p.x + 0.15, H + 0.3, p.z - DESK.d + 0.18)
     g.add(this.target(monitor, { kind: 'device', deviceId: d.id }))
     const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.52, 0.3), new THREE.MeshBasicMaterial({ map: this.screenTexture(d, []), toneMapped: false }))
     screen.position.set(0, 0, 0.016)
     monitor.add(screen)
     const stand = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.14, 0.05), legMat)
-    stand.position.set(p.x + 0.15, DESK.h + 0.07, p.z - DESK.d + 0.18)
+    stand.position.set(p.x + 0.15, H + 0.07, p.z - DESK.d + 0.18)
     g.add(stand)
     const kb = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.02, 0.14), new THREE.MeshStandardMaterial({ color: 0x151a22 }))
-    kb.position.set(p.x + 0.15, DESK.h + 0.01, p.z - 0.18)
+    kb.position.set(p.x + 0.15, H + 0.01, p.z - 0.18)
     g.add(kb)
     this.buildChassis(g, d, p, 0.42)
   }
@@ -1725,7 +1907,7 @@ export class RoomScene {
     if (phone.deskOf !== other.id) return null
     const pc = this.layout.placements.find((p) => p.deviceId === other.id)
     if (!pc || (pc.station !== 'desk' && pc.station !== 'lounge')) return null
-    const top = (pc.station === 'desk' ? DESK.h : BALCONY.table.h) + 0.012
+    const top = (pc.station === 'desk' ? (pc.deskH ?? DESK.h) : BALCONY.table.h) + 0.012
     const back = pc.z - (pc.station === 'desk' ? DESK.d : BALCONY.table.d) + 0.06
     const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
     return [
@@ -1786,7 +1968,7 @@ export class RoomScene {
       g.fillStyle = '#e6edf7'
       g.font = `bold ${d.type === 'pc' ? 42 : 34}px ${FONT}`
       g.textBaseline = 'middle'
-      if (d.type === 'laptop') return
+      if (d.type === 'laptop' || d.type === 'mobile') return
       if (d.type === 'ap') {
         g.textAlign = 'left'
         g.font = `bold 28px ${FONT}`

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import Workspace from '../components/Workspace.vue'
-import { emptyTopology } from '../engine/network'
+import { ensureAdminPc, starterTopology } from '../engine/network'
 import type { Topology } from '../engine/types'
 import { api, errorMessage, type SavedTopology } from '../lib/api'
 import { useAuth } from '../stores/auth'
@@ -19,11 +19,11 @@ const showLoad = ref(false)
 function restoreAutosave(): Topology {
   try {
     const raw = localStorage.getItem(AUTOSAVE_KEY)
-    if (raw) return JSON.parse(raw)
+    if (raw) return ensureAdminPc(JSON.parse(raw))
   } catch {
     /* ignore corrupt autosave */
   }
-  return emptyTopology()
+  return starterTopology()
 }
 
 onMounted(async () => {
@@ -76,7 +76,7 @@ async function remove(t: SavedTopology) {
 
 function clearAll() {
   if (!confirm('Clear the whole network?')) return
-  ws.load(emptyTopology())
+  ws.load(starterTopology())
   currentId.value = null
 }
 </script>

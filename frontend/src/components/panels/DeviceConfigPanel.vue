@@ -7,6 +7,7 @@ import { isValidIp, parseCidr } from '../../engine/ip'
 import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isConsolePort, isHost, isPhonePcPort, linkActive, linkOn, peerOf, portKind, setIfaceIp } from '../../engine/network'
 import { useWorkspace } from '../../stores/workspace'
 import DeviceIcon from '../canvas/DeviceIcon.vue'
+import RackPanel from './RackPanel.vue'
 
 const ws = useWorkspace()
 
@@ -119,6 +120,14 @@ function doPing() {
         />
       </div>
       <p class="mt-2 text-[10px] text-dim">{{ DEVICE_CATALOG[ws.selectedDevice.type].description }}</p>
+      <button
+        v-if="ws.selectedDevice.type !== 'isp'"
+        class="btn mt-2 w-full"
+        title="Walk up to this device in the 3D room"
+        @click="ws.goToDevice(ws.selectedDevice.id)"
+      >
+        📍 Show in 3D
+      </button>
 
       <template v-if="onDesk(ws.selectedDevice)">
         <h3 class="section">room</h3>
@@ -210,6 +219,9 @@ function doPing() {
         delete device
       </button>
     </template>
+
+    <!-- Rack -->
+    <RackPanel v-else-if="ws.selection?.kind === 'rack'" :index="Number(ws.selection.id)" />
 
     <!-- Link -->
     <template v-else-if="ws.selectedLink">

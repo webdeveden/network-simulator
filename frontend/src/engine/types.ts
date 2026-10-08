@@ -1,4 +1,4 @@
-export type DeviceType = 'pc' | 'laptop' | 'server' | 'switch' | 'ap' | 'router' | 'firewall' | 'patch' | 'isp' | 'modem' | 'printer' | 'phone'
+export type DeviceType = 'pc' | 'laptop' | 'server' | 'switch' | 'ap' | 'router' | 'firewall' | 'patch' | 'isp' | 'modem' | 'printer' | 'phone' | 'mobile'
 
 export interface Iface {
   name: string
@@ -40,6 +40,8 @@ export interface Device {
   y: number
   /** Prebuilt by a mission: can be configured but not deleted. */
   locked?: boolean
+  /** Free-text notes kept on this PC (the admin PC's Notes tab). */
+  notes?: string
   /** 2D map size of the ISP cloud (it can be enlarged). */
   w?: number
   h?: number
@@ -119,6 +121,16 @@ export interface Link {
   wifi?: { ssid: string; key?: string }
 }
 
+export interface IpLogEntry {
+  /** Unix time in ms. */
+  t: number
+  device: string
+  iface: string
+  /** CIDR, or null when the address was removed. */
+  ip: string | null
+  was: string | null
+}
+
 export interface WallRack {
   id: number
   room: string
@@ -130,6 +142,8 @@ export interface Topology {
   links: Link[]
   /** Custom room names and colours, by room id (see room/layout roomsOf). Shared by the 2D map and the 3D building. */
   rooms?: Record<string, { label?: string; color?: string }>
+  /** IP addresses assigned, changed or removed on network devices, newest last (the admin PC's Notes tab). */
+  ipLog?: IpLogEntry[]
   /** Built-in rooms the player deleted. */
   removedRooms?: string[]
   /** Rooms the player added: more offices east of the building, or balconies off the corridor. */

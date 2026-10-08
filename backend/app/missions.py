@@ -308,7 +308,7 @@ MISSIONS: list[dict[str, Any]] = [
         ),
         "start": {
             "devices": [
-                {"type": "pc", "name": "ADMIN-PC", "x": 60, "y": 200, "ifaces": {"eth0": "10.0.0.10/24"}, "gateway": "10.0.0.1"},
+                {"type": "pc", "name": "ADMIN-PC", "x": 60, "y": 200, "ifaces": {"eth0": "10.0.0.10/24"}, "gateway": "10.0.0.1", "room": "server"},
                 {"type": "switch", "name": "SW1", "x": 300, "y": 200},
                 {"type": "router", "name": "R1", "x": 540, "y": 200, "ifaces": {"g0/0": "10.0.0.1/24"}},
             ],

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, markRaw, ref, shallowRef } from 'vue'
+import { computed, markRaw, ref, shallowRef, watch } from 'vue'
 import type { CommandResult, Line } from '../engine/commands'
 import { emptySimState, sendPacket, type SimState } from '../engine/forwarding'
 import {
@@ -17,10 +17,10 @@ import {
   removeDevice,
   topologyCost,
 } from '../engine/network'
-import { emptyRacks, newRackSpot, tidyByRoom } from '../room/groups'
-import { moveDeviceInRack, officesOf, roomLabel, roomLayout, roomsOf, WALL_RACK_BASE } from '../room/layout'
+import { emptyRacks, newRackSpot, roomGroups, spotFor, tidyByRoom } from '../room/groups'
+import { deleteRack as deleteRackFrom, moveDeviceInRack, officesOf, roomLabel, roomLayout, roomOf, roomsOf, WALL_RACK_BASE } from '../room/layout'
 import { completeLine, ctrlZ, newSession, promptOf, runLine, sessionIsIos, type Session } from '../engine/shell'
-import type { CableChoice, Device, DeviceType, Link, PingResult, Topology } from '../engine/types'
+import type { CableChoice, Device, DeviceType, IpLogEntry, Link, PingResult, Topology } from '../engine/types'
 
 export const ALL_TYPES = Object.keys(DEVICE_CATALOG) as DeviceType[]
 
@@ -61,7 +61,7 @@ export interface ConsoleWin {
   z: number
 }
 
-export type Selection = { kind: 'device' | 'link'; id: string } | null
+export type Selection = { kind: 'device' | 'link' | 'rack'; id: string } | null
 
 export interface PacketAnim {
   linkId: string
@@ -114,6 +114,7 @@ export const useWorkspace = defineStore('workspace', () => {
   )
 
   function load(t: Topology, opts: { palette?: DeviceType[]; budget?: number | null } = {}) {
+    populateBalconies(t)
     topo.value = t
     sim.value = markRaw(emptySimState())
     palette.value = opts.palette ?? ALL_TYPES
@@ -124,7 +125,36 @@ export const useWorkspace = defineStore('workspace', () => {
     flash.value = {}
     sessions = new Map()
     consoles.value = []
+    ipSnapshot = networkIps(t)
   }
+
+  /** Network devices whose IPs belong in the admin's notes. */
+  const NOTED: DeviceType[] = ['router', 'switch', 'firewall', 'ap', 'isp', 'modem']
+  function networkIps(t: Topology): Map<string, { device: string; iface: string; ip: string | null }> {
+    const m = new Map<string, { device: string; iface: string; ip: string | null }>()
+    for (const d of t.devices.filter((x) => NOTED.includes(x.type)))
+      for (const i of d.ifaces) if (i.ip || i.prefix !== undefined) m.set(`${d.id}|${i.name}`, { device: d.name, iface: i.name, ip: i.ip ? `${i.ip}/${i.prefix}` : null })
+    return m
+  }
+  let ipSnapshot = networkIps(topo.value)
+
+  // Whenever a network device's IP is assigned, changed or removed (CLI, PuTTY, side
+  // panel…), note it in the admin's log. Loading a network resets the snapshot first.
+  watch(
+    () => JSON.stringify([...networkIps(topo.value)]),
+    () => {
+      const now = networkIps(topo.value)
+      const log: IpLogEntry[] = []
+      for (const [k, v] of now) {
+        const before = ipSnapshot.get(k)?.ip ?? null
+        if (before !== v.ip) log.push({ t: Date.now(), device: v.device, iface: v.iface, ip: v.ip, was: before })
+      }
+      for (const [k, v] of ipSnapshot)
+        if (!now.has(k) && v.ip && topo.value.devices.some((d) => `${d.id}|${v.iface}` === k)) log.push({ t: Date.now(), device: v.device, iface: v.iface, ip: null, was: v.ip })
+      ipSnapshot = now
+      if (log.length) topo.value.ipLog = [...(topo.value.ipLog ?? []), ...log].slice(-60)
+    },
+  )
 
   function notify(text: string, kind: 'ok' | 'err' = 'ok') {
     toast.value = { text, kind, key: Date.now() }
@@ -136,7 +166,11 @@ export const useWorkspace = defineStore('workspace', () => {
     return false
   }
 
-  function add(type: DeviceType, x: number, y: number, where: { rack?: number; room?: string; deskOf?: string } = {}) {
+  /**
+   * Adds a device. Its 2D spot is worked out from its room (see spotFor), unless it
+   * was dropped (`dropped`) inside its own room's box: then it stays where it was dropped.
+   */
+  function add(type: DeviceType, x: number, y: number, where: { rack?: number; room?: string; deskOf?: string } = {}, dropped = false) {
     if (!palette.value.includes(type)) return
     if (!canAfford(DEVICE_CATALOG[type].cost)) return
     // The first device in an empty rack lands on the rack's spot on the 2D map.
@@ -145,6 +179,13 @@ export const useWorkspace = defineStore('workspace', () => {
     if (where.rack !== undefined) d.rack = where.rack
     if (where.room !== undefined) d.room = where.room
     if (where.deskOf !== undefined) d.deskOf = where.deskOf
+    const home = roomGroups(topo.value, d.id).find((g) => g.id === roomOf(d, topo.value))
+    const keep = dropped && home && x >= home.x && x <= home.x + home.w && y >= home.y && y <= home.y + home.h
+    const auto = keep ? null : spotFor(topo.value, d.id)
+    if (auto) {
+      d.x = Math.round(auto.x)
+      d.y = Math.round(auto.y)
+    }
     selection.value = { kind: 'device', id: d.id }
     return d
   }
@@ -152,17 +193,17 @@ export const useWorkspace = defineStore('workspace', () => {
   /** A device waiting for the "where does it go?" dialog. `preset` pre-selects a choice. */
   /** The "add a rack" dialog (from the device list). */
   const rackDialog = ref(false)
-  const pendingAdd = ref<{ type: DeviceType; x: number; y: number; preset?: { rack?: number; room?: string } } | null>(null)
+  const pendingAdd = ref<{ type: DeviceType; x: number; y: number; preset?: { rack?: number; room?: string }; dropped?: boolean } | null>(null)
 
   /** Asks where a new device goes (rack or office) before adding it. The ISP is outside: no question. */
-  function requestAdd(type: DeviceType, x: number, y: number, preset?: { rack?: number; room?: string }) {
+  function requestAdd(type: DeviceType, x: number, y: number, preset?: { rack?: number; room?: string }, dropped = false) {
     if (!palette.value.includes(type)) return
     if (isOutside({ type } as Device)) {
       const d = add(type, x, y)
       if (d) notify(`${d.name} is outside the building: it shows on the 2D map only`)
       return
     }
-    pendingAdd.value = { type, x, y, preset }
+    pendingAdd.value = { type, x, y, preset, dropped }
   }
 
   /** Where the dialog said to put it: an existing rack, a new rack, or an office. */
@@ -172,10 +213,14 @@ export const useWorkspace = defineStore('workspace', () => {
     const p = pendingAdd.value
     if (!p) return
     pendingAdd.value = null
-    if ('room' in where) return add(p.type, p.x, p.y, { room: where.room })
-    if ('deskOf' in where) return add(p.type, p.x, p.y, { deskOf: where.deskOf })
+    if ('room' in where) {
+      const d = add(p.type, p.x, p.y, { room: where.room }, p.dropped)
+      if (d) withDeskPhone(d)
+      return d
+    }
+    if ('deskOf' in where) return add(p.type, p.x, p.y, { deskOf: where.deskOf }, p.dropped)
     const rack = 'rack' in where ? where.rack : 'newFloorRack' in where ? addFloorRack() : addWallRack(where.newWallRack)
-    return add(p.type, p.x, p.y, { rack })
+    return add(p.type, p.x, p.y, { rack }, p.dropped)
   }
 
   /** Puts a phone on each of these PC/laptop desks. Cabling is left to the player. */
@@ -185,7 +230,12 @@ export const useWorkspace = defineStore('workspace', () => {
     const hosts = deskIds.map((id) => getDevice(topo.value, id)).filter((d): d is Device => !!d)
     if (!canAfford(DEVICE_CATALOG.phone.cost * hosts.length)) return
     pendingAdd.value = null
-    for (const host of hosts) addDevice(topo.value, 'phone', Math.round(host.x + 110), Math.round(host.y)).deskOf = host.id
+    for (const host of hosts) {
+      const phone = addDevice(topo.value, 'phone', Math.round(host.x + 110), Math.round(host.y))
+      phone.deskOf = host.id
+      const spot = spotFor(topo.value, phone.id)
+      if (spot) Object.assign(phone, { x: Math.round(spot.x), y: Math.round(spot.y) })
+    }
     const n = hosts.length
     notify(`${n} phone${n === 1 ? '' : 's'} added: cable each PC to its phone's pc port, and the phone's eth0 to the network`)
   }
@@ -218,11 +268,29 @@ export const useWorkspace = defineStore('workspace', () => {
     return null
   }
 
+  /** Deletes a rack; its devices move to the server room's floor racks. */
+  function deleteRack(index: number) {
+    const name = deleteRackFrom(topo.value, index)
+    if (name) notify(`${name} deleted`)
+    if (selection.value?.kind === 'rack') selection.value = null
+  }
+
   /** Ask the 3D view to take the player to a room (it watches this). */
-  const goTo = ref<{ room: string; seq: number } | null>(null)
+  /** A pending "go to" for the 3D view; it sets `done` once it has moved the player. */
+  const goTo = ref<{ room?: string; device?: string; rack?: number; seq: number; done?: boolean } | null>(null)
   function goToRoom(room: string) {
     setView('3d')
     goTo.value = { room, seq: (goTo.value?.seq ?? 0) + 1 }
+  }
+  /** "Show in 3D" for a rack: stand in front of it, door open. */
+  function goToRack(rack: number) {
+    setView('3d')
+    goTo.value = { rack, seq: (goTo.value?.seq ?? 0) + 1 }
+  }
+  /** "Show in 3D": walk up to a device, facing it. */
+  function goToDevice(device: string) {
+    setView('3d')
+    goTo.value = { device, seq: (goTo.value?.seq ?? 0) + 1 }
   }
 
   /** The "add a room" dialog (from the device list). */
@@ -235,6 +303,48 @@ export const useWorkspace = defineStore('workspace', () => {
     list.push({ id, label: label.trim().slice(0, 40) || (kind === 'balcony' ? 'Balcony' : 'New office'), kind })
     if (color) editRoom(id, { color })
     return id
+  }
+
+  /**
+   * Every balcony seat has someone on it: each empty lounge chair gets a laptop user
+   * and each free railing spot a smartphone user (real devices). Runs when a network
+   * loads and when a balcony is added.
+   */
+  function populateBalconies(t: Topology) {
+    const balconies = roomsOf(t).filter((r) => r.kind === 'balcony')
+    if (!balconies.length) return
+    const free = roomLayout(t).seats.filter((s) => !s.deviceId)
+    for (const b of balconies) {
+      const room = roomLayout(t).rooms.find((r) => r.id === b.id)!
+      const here = free.filter((s) => s.x > room.x0 && s.x < room.x1 && s.z > room.z0 && s.z < room.z1)
+      here.forEach((seat, k) => {
+        const n = t.devices.length + k
+        const d = addDevice(t, seat.pose === 'sit' ? 'laptop' : 'mobile', 120 + (n % 5) * 130, 80 + Math.floor(n / 5) * 120)
+        d.room = b.id
+        const spot = spotFor(t, d.id)
+        if (spot) Object.assign(d, { x: Math.round(spot.x), y: Math.round(spot.y) })
+      })
+    }
+  }
+
+  /** People on a new balcony: a laptop user on every chair, a smartphone user at every railing spot. */
+  function addBalconyPeople() {
+    const before = topo.value.devices.length
+    populateBalconies(topo.value)
+    selection.value = null
+    return topo.value.devices.length - before
+  }
+
+  /** Every new PC comes with an IP phone on its desk (not cabled: you wire it yourself). */
+  function withDeskPhone(pc: Device) {
+    if (pc.type !== 'pc' || !palette.value.includes('phone')) return
+    if (budget.value !== null && spent.value + DEVICE_CATALOG.phone.cost > budget.value) return
+    const phone = addDevice(topo.value, 'phone', pc.x + 120, pc.y)
+    phone.deskOf = pc.id
+    const spot = spotFor(topo.value, phone.id)
+    if (spot) Object.assign(phone, { x: Math.round(spot.x), y: Math.round(spot.y) })
+    selection.value = { kind: 'device', id: pc.id }
+    notify(`${pc.name} added with ${phone.name} on its desk: cable the PC to the phone's pc port, and the phone's eth0 to the network`)
   }
 
   /** One more (empty) floor rack in the server room; returns its index. */
@@ -356,6 +466,7 @@ export const useWorkspace = defineStore('workspace', () => {
   function removeSelected() {
     const s = selection.value
     if (!s) return
+    if (s.kind === 'rack') return // racks are deleted from their panel, after a confirmation
     if (s.kind === 'link') disconnect(topo.value, s.id)
     else {
       const d = getDevice(topo.value, s.id)
@@ -482,9 +593,13 @@ export const useWorkspace = defineStore('workspace', () => {
     moveToRoom,
     pendingAdd,
     addPhones,
+    addBalconyPeople,
     deleteRoom,
+    deleteRack,
     goTo,
     goToRoom,
+    goToDevice,
+    goToRack,
     rackDialog,
     roomDialog,
     addRoom,

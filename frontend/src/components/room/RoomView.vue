@@ -21,13 +21,17 @@ function go(id: string) {
   scene?.goToRoom(id)
 }
 // "Go to" from the side menu (it may switch to 3D first, so wait for the scene).
-watch(
-  () => ws.goTo?.seq,
-  () => {
-    const g = ws.goTo
-    if (g) setTimeout(() => scene?.goToRoom(g.room), 50)
-  },
-)
+// "Go to" / "Show in 3D" from outside this view. Also handled on mount: switching
+// from the 2D map creates this view after the request was made.
+function handleGoTo() {
+  const g = ws.goTo
+  if (!g || g.done || !scene) return
+  g.done = true
+  if (g.device) scene.goToDevice(g.device)
+  else if (g.rack !== undefined) scene.goToRack(g.rack)
+  else if (g.room) scene.goToRoom(g.room)
+}
+watch(() => ws.goTo?.seq, () => setTimeout(handleGoTo, 50))
 const overview = ref(false)
 const overviewHint = ref<string | null>(null)
 let scene: RoomScene | null = null
@@ -52,12 +56,16 @@ function hideHelp() {
 const name = (id: string) => getDevice(ws.topo, id)?.name ?? '?'
 const port = (deviceId: string, iface: string) => `${name(deviceId)} ${iface}`
 
-/** Changes that need the room rebuilt: devices, addresses, ports, cables. */
+/** Changes that need the room rebuilt: devices, addresses, ports, cables, rooms and racks. */
 const structure = computed(() =>
   JSON.stringify([
-    ws.topo.devices.map((d) => [d.id, d.type, d.name, d.gateway, d.rack, d.slot, d.ios?.wlan, d.ifaces.map((i) => [i.name, i.ip, i.prefix, i.shutdown])]),
+    ws.topo.devices.map((d) => [d.id, d.type, d.name, d.gateway, d.rack, d.slot, d.room, d.deskOf, d.ios?.wlan, d.ifaces.map((i) => [i.name, i.ip, i.prefix, i.shutdown])]),
     ws.topo.links.map((l) => [l.id, l.a, l.b, l.up, l.wifi]),
     ws.topo.rooms,
+    ws.topo.customRooms,
+    ws.topo.removedRooms,
+    ws.topo.serverRacks,
+    ws.topo.wallRacks,
   ]),
 )
 
@@ -99,7 +107,7 @@ const hint = computed(() => {
       const d = getDevice(ws.topo, t.deviceId)
       if (!d) return ''
       const racked = !onDesk(d)
-      return `${d.name} (${d.type}) · E: open console · Click: select · Drag: ${racked ? 'move in the rack' : 'move to another office'}`
+      return `${d.name} (${d.type}) · E: open console · Click: select · Drag: ${racked ? 'move in the rack' : 'move to another room'}`
     }
     case 'cable': {
       const l = ws.topo.links.find((x) => x.id === t.linkId)
@@ -241,7 +249,8 @@ onMounted(() => {
   })
   scene.sync(ws.topo)
   scene.setSelection(ws.selection)
-  if (new URLSearchParams(location.search).has('debug')) Object.assign(window, { room: scene })
+  if (new URLSearchParams(location.search).has('debug')) Object.assign(window, { room: scene, ws })
+  setTimeout(handleGoTo, 50)
 })
 
 onBeforeUnmount(() => {
@@ -354,7 +363,7 @@ watch(
       class="absolute bottom-3 left-3 z-20 max-w-[calc(100%-1.5rem)] border border-line bg-panel/90 px-3 py-2 text-[11px] leading-relaxed text-dim"
     >
       <button class="float-right ml-3 text-dim hover:text-text" title="Hide" @click="hideHelp">✕</button>
-      <span class="text-cyan">W/S</span> walk (Shift runs) · <span class="text-cyan">A/D</span> turn ·
+      <span class="text-cyan">Click the floor</span> to walk there · <span class="text-cyan">W/S</span> walk · <span class="text-cyan">A/D</span> turn ·
       <span class="text-cyan">Right-drag</span> or <span class="text-cyan">Alt+drag</span> look around · <span class="text-cyan">two-finger swipe</span> walk/turn ·
       <span class="text-cyan">Click</span> doors, ports, cables ·
       <span class="text-cyan">E</span> / <span class="text-cyan">double-click</span> console ·

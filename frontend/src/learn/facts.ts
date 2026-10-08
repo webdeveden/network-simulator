@@ -41,7 +41,7 @@ export function deviceFacts(topo: Topology, d: Device): Fact[] {
       else facts.push({ label: 'gateway', value: `${d.gateway} (in your subnet)`, tone: 'ok' })
     }
     const l = linkOn(topo, d.id, i.name)
-    if (d.type === 'laptop')
+    if (d.type === 'laptop' || d.type === 'mobile')
       facts.push(
         l?.wifi
           ? { label: 'wi-fi', value: `"${l.wifi.ssid}" ${linkActive(topo, l) ? 'connected' : 'dropped by the AP'}`, tone: linkActive(topo, l) ? 'ok' : 'warn' }

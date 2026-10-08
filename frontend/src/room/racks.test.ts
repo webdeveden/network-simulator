@@ -158,3 +158,28 @@ describe('empty racks on the 2D map', () => {
     expect(racks[1].x).toBeGreaterThan(racks[0].x)
   })
 })
+
+describe('deleting racks', () => {
+  it('removes a floor rack, renumbers the ones after it, and re-mounts its devices', async () => {
+    const { deleteRack } = await import('./layout')
+    const t = buildTopology({ devices: [{ type: 'router', name: 'R1', x: 0, y: 0 }, { type: 'switch', name: 'SW1', x: 0, y: 0 }] }, false)
+    t.serverRacks = 3
+    t.devices[0].rack = 0
+    t.devices[1].rack = 2
+    expect(deleteRack(t, 0)).toBe('Rack 1')
+    const l = roomLayout(t)
+    expect(l.racks.filter((r) => r.kind === 'floor')).toHaveLength(2)
+    expect(t.devices[1].rack).toBe(1)
+    expect(l.racks.flatMap((r) => r.deviceIds).sort()).toEqual(t.devices.map((d) => d.id).sort())
+  })
+
+  it('removes a wall rack; its gear moves to the server room', async () => {
+    const { deleteRack } = await import('./layout')
+    const t = buildTopology({ devices: [{ type: 'switch', name: 'SW1', x: 0, y: 0 }] }, false)
+    t.wallRacks = [{ id: WALL_RACK_BASE, room: 'sales', name: 'IDF-S' }]
+    t.devices[0].rack = WALL_RACK_BASE
+    expect(deleteRack(t, WALL_RACK_BASE)).toBe('IDF-S')
+    expect(t.wallRacks).toEqual([])
+    expect(roomOf(t.devices[0], t)).toBe('server')
+  })
+})

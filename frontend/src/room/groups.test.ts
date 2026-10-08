@@ -48,3 +48,30 @@ describe('room groups on the 2D map', () => {
     g.forEach((a, i) => g.slice(i + 1).forEach((b) => expect(a.x + a.w <= b.x || b.x + b.w <= a.x).toBe(true)))
   })
 })
+
+describe('placing new devices on the 2D map', () => {
+  it('puts a new device inside its own room box, in a free cell', async () => {
+    const { spotFor } = await import('./groups')
+    const t = topo()
+    tidyByRoom(t)
+    const pc = { ...structuredClone(t.devices[2]), id: 'new', name: 'PC9', x: 9999, y: 9999 }
+    t.devices.push(pc)
+    const s = spotFor(t, 'new')!
+    Object.assign(pc, s)
+    const it = roomGroups(t).find((g) => g.id === 'it')!
+    expect(s.x).toBeGreaterThanOrEqual(it.x)
+    expect(s.x).toBeLessThan(it.x + it.w)
+    expect(t.devices.filter((d) => d.id !== 'new').some((d) => Math.abs(d.x - s.x) < 70 && Math.abs(d.y - s.y) < 60)).toBe(false)
+  })
+
+  it('stacks new rack gear under its rack-mates', async () => {
+    const { spotFor } = await import('./groups')
+    const t = topo()
+    tidyByRoom(t)
+    const r1 = t.devices.find((d) => d.name === 'R1')!
+    t.devices.push({ ...structuredClone(r1), id: 'r2', name: 'R2', x: 0, y: 0 })
+    const s = spotFor(t, 'r2')!
+    expect(s.x).toBe(t.devices.find((d) => d.name === 'SW1')!.x)
+    expect(s.y).toBeGreaterThan(r1.y)
+  })
+})

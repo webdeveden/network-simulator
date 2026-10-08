@@ -45,21 +45,31 @@ Access points (AP) are layer 2 bridges. They have a wired uplink `g0/0` and a ra
 
 Laptops have only `wlan0` and join with `wifi scan` and `wifi connect <ssid> <password>`. A Wi-Fi link is free and works only while the AP still accepts it: changing the key, removing the SSID or shutting the radio drops the clients.
 
+PC and laptop console windows have a **PuTTY** tab: a host field, SSH or Serial (COM1 over a console cable), a username, and saved sessions for every Cisco-style device marked *SSH ready* or with the reason it isn't. Open runs the login in the Console tab. A sandbox always has **ADMIN-PC** at the server room desk (uncabled); older saved sandboxes get one when they load. The admin's PC can sit at a desk in the server room (pick "Server room" for a PC or laptop), or in the IT office.
+
+A PC or laptop in the server room (ADMIN-PC) also gets a **Notes** tab. It lists every router, switch, firewall, AP, modem and ISP with its rack/room and interface IPs, plus an **SSH** button that opens `ssh admin@<ip>` in the Console tab (green when the device is SSH ready). Whenever an IP is assigned or changed on a network device, an entry (time, device, interface, new IP, old IP) is added automatically to the change log (the last 60 are kept). A free-text *My notes* box is saved with the topology.
+
 `ssh admin@10.0.0.1` from a PC, or `ssh -l admin 10.0.0.1` from IOS, opens a session on the remote device. The connection goes over TCP 22, so firewall rules apply. It works only once the target has RSA keys, allows SSH on its vty lines, and has a login set up.
 
 ### Racks, patch panels and the ISP
 
-Adding a device asks where it goes: an existing rack, a new floor rack (MDF) in the server room, or a new wall-mounted mini rack (IDF) in an office; PCs, laptops and APs ask for an office. **＋ Add a rack** in the device list adds an empty one. Wall racks hang at chest height on the office's back wall and hold a few devices (a full one spills over to the server room).
+Adding a device asks where it goes: an existing rack, a new floor rack (MDF) in the server room, or a new wall-mounted mini rack (IDF) in an office; PCs, laptops and APs ask for an office. **＋ Add a rack** in the device list adds an empty one, and the Building section lists every rack: click one to see what is mounted in it, show it in 3D, or delete it (with a confirmation) (its devices move to the server room's other racks; later floor racks are renumbered). Wall racks hang at chest height on the office's back wall and hold a few devices (a full one spills over to the server room).
 
 A **patch panel** has 48 front ports (p1–p48) wired straight through to 48 rear ports (p1r–p48r); traffic only passes between matching numbers. Auto cabling lands office devices on the rear and switches on the front of the same port. The **ISP** is a cloud on the 2D map only (drag its corner to enlarge it); it routes like a router and has 8.8.8.8 on lo0 for "the Internet".
+
+Click the floor in the 3D view to walk there, and **📍 Show in 3D** in any device's side panel walks you up to it. New devices land inside their room's box on the 2D map (rack gear under its rack-mates).
 
 ### Office equipment, balconies and new rooms
 
 - **ONT / modem:** a rack unit where the ISP's line comes in: the fiber `pon` port faces the ISP, `lan1`–`lan4` go to your edge router. A layer 2 bridge.
 - **Printer:** a host on a cabinet by the office door.
+- **PC:** comes with an IP phone on its desk (in the Sandbox), not cabled: wire PC → phone `pc` port → network yourself.
 - **IP phone:** a host with two ports and a built-in switch: `eth0` to the network, `pc` for the PC on the desk (both straight-through). The add dialog lists desks without a phone as checkboxes, with **All desks**. Cabling is up to you; a PC-to-phone cable lies on the desk, behind the monitor.
+- **Smartphone:** a wireless-only host like the laptop (`wifi scan`, `wifi connect`).
+- Every balcony seat has someone on it: a laptop user on each lounge chair and a smartphone user at each railing spot (filled in when the network loads and when a balcony is added).
+- On a balcony, laptops and smartphones are used by people: laptops on the lounge chairs' laps, smartphones in hand at the railing. They're real devices: click to select, E for the console. Free chairs stay empty. A new balcony can start with a few laptop and smartphone users.
 - **＋ Add a room** in the device list adds an **office** (east end of the building) or a **balcony** (a terrace off the corridor, through a glass door, facing the city, with people working on laptops). Only laptops and APs go out on a balcony. APs hang from the ceiling in offices and on the outside wall by a balcony door.
-- The **Building** section of the side menu lists the rooms: click one to go there in 3D (or use **Go to ▾** in the 3D view), or 🗑 to delete an office or balcony (its devices move to another office). Side menu sections fold up.
+- The **Building** section of the side menu lists the rooms: click one to go there in 3D (or use **Go to ▾** in the 3D view), or 🗑 to delete an office or balcony (its devices move to another office). Side menu sections fold up, and the device list is grouped into Network devices, End devices, Servers and Internet.
 
 ### Rooms on the 2D map
 

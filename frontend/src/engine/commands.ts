@@ -1,6 +1,6 @@
 import { formatRule, routingTable, sendPacket, type SimState } from './forwarding'
 import { isValidIp, parseCidr, prefixToMask } from './ip'
-import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, isPhonePcPort, isRouterLike, linkActive, linkOn, netIfaces, setIfaceIp, wifiProblem } from './network'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, isPhonePcPort, isWifiClient, isRouterLike, linkActive, linkOn, netIfaces, setIfaceIp, wifiProblem } from './network'
 import type { Device, FwRule, PingResult, Proto, Topology } from './types'
 
 export type LineKind = 'out' | 'ok' | 'err' | 'info' | 'muted'
@@ -291,7 +291,7 @@ function networksInRange(topo: Topology) {
 
 function wifi(topo: Topology, dev: Device, rest: string[]): CommandResult {
   const err = (t: string): CommandResult => ({ lines: [out(t, 'err')] })
-  if (dev.type !== 'laptop') return err(`${dev.name} has no wireless adapter. Laptops join Wi-Fi; PCs and servers use cables.`)
+  if (!isWifiClient(dev)) return err(`${dev.name} has no wireless adapter. Laptops and smartphones join Wi-Fi; PCs and servers use cables.`)
   const current = linkOn(topo, dev.id, 'wlan0')
   const [sub, ssid, ...pw] = rest
   switch (sub) {

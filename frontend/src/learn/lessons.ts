@@ -416,6 +416,7 @@ const phoneTopic: Topic = {
 const TOPICS: Record<DeviceType, Topic[]> = {
   pc: [ipBasics, gateway, testing, cabling, ports, sshClient],
   laptop: [wifi, ipBasics, gateway, testing, sshClient],
+  mobile: [wifi, ipBasics, gateway, testing],
   server: [serverRole, ipBasics, gateway, testing, ports],
   switch: [switching, cablingIos, structured, iosModes, portAdmin, neighbors, saving],
   ap: [apRole, apSecure, wifiSecurity, iosModes, saving],

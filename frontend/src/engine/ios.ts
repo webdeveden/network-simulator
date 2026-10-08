@@ -944,7 +944,7 @@ const SPECS: Spec[] = [
         const i = client?.ifaces.find((x) => x.name === l.b.iface)
         if (!client || !i) continue
         const up = linkActive(c.topo, l)
-        lines.push(L(`${ciscoMac(i.mac)} ${(i.ip ?? '-').padEnd(16)}${'laptop'.padEnd(14)}${client.name.padEnd(16)}${up ? 'Assoc' : 'Rejected'}`, up ? 'out' : 'err'))
+        lines.push(L(`${ciscoMac(i.mac)} ${(i.ip ?? '-').padEnd(16)}${client.type === 'mobile' ? 'smartphone'.padEnd(14) : 'laptop'.padEnd(14)}${client.name.padEnd(16)}${up ? 'Assoc' : 'Rejected'}`, up ? 'out' : 'err'))
       }
       if (lines.length === 3) lines.push(tip('No clients yet. On a laptop: wifi scan, then wifi connect <ssid> <password>'))
       return lines
