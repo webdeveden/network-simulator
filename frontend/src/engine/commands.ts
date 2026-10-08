@@ -1,6 +1,6 @@
 import { formatRule, routingTable, sendPacket, type SimState } from './forwarding'
 import { isValidIp, parseCidr, prefixToMask } from './ip'
-import { DEVICE_CATALOG, getDevice, isHost, linkActive, linkOn, setIfaceIp, wifiProblem } from './network'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, linkActive, linkOn, netIfaces, setIfaceIp, wifiProblem } from './network'
 import type { Device, FwRule, PingResult, Proto, Topology } from './types'
 
 export type LineKind = 'out' | 'ok' | 'err' | 'info' | 'muted'
@@ -32,6 +32,7 @@ export const HELP: [string, string][] = [
   ['traceroute <ip|device>', 'list the routers a packet crosses'],
   ['tcp <ip|device> <port>', 'test a TCP connection (useful through firewalls)'],
   ['arp -a', 'show the ARP cache'],
+  ['console', 'open the CLI of the device on your console cable (COM1)'],
   ['wifi scan', 'list Wi-Fi networks in range (laptop)'],
   ['wifi connect <ssid> [password]', 'join a Wi-Fi network (laptop)'],
   ['wifi status | wifi disconnect', 'show or drop the Wi-Fi connection (laptop)'],
@@ -91,11 +92,22 @@ export function execute(
         const peer = l && (l.a.device === dev.id && l.a.iface === i.name ? l.b : l.a)
         const peerDev = peer && getDevice(topo, peer.device)
         const status = l ? (l.up ? 'UP' : 'DOWN') : 'no cable'
+        if (i.name === 'com1') {
+          lines.push(out(l ? `com1: console cable to ${peerDev?.name} (type "console" to open it)` : 'com1: serial port, no console cable', l ? 'ok' : 'muted'))
+          continue
+        }
+        const problem = l && cableProblem(topo, l)
+        if (problem) {
+          lines.push(out(`${i.name}: DOWN  -> ${peerDev?.name} ${peer!.iface}  (wrong cable)`, 'err'))
+          lines.push(out(`    ${problem}`, 'muted'))
+          if (i.ip) lines.push(out(`    inet ${i.ip}/${i.prefix}  netmask ${prefixToMask(i.prefix!)}`))
+          continue
+        }
         if (l?.wifi) {
           const up = linkActive(topo, l)
           lines.push(out(`${i.name}: ${up ? 'CONNECTED' : 'DISCONNECTED'}  ssid "${l.wifi.ssid}" via ${peerDev?.name ?? '?'}`, up ? 'ok' : 'err'))
         } else if (i.name === 'wlan0') lines.push(out(`${i.name}: not connected (wifi scan, wifi connect <ssid>)`, 'muted'))
-        else lines.push(out(`${i.name}: ${i.shutdown ? 'ADMIN DOWN' : status}${peerDev ? `  -> ${peerDev.name} ${peer!.iface}` : ''}`, l ? 'ok' : 'muted'))
+        else lines.push(out(`${i.name}: ${i.shutdown ? 'ADMIN DOWN' : status}${peerDev ? `  -> ${peerDev.name} ${peer!.iface}  (${CABLES[l!.cable ?? 'straight'].label.toLowerCase()})` : ''}`, l ? 'ok' : 'muted'))
         lines.push(out(`    ether ${i.mac}`, 'muted'))
         if (i.ip) lines.push(out(`    inet ${i.ip}/${i.prefix}  netmask ${prefixToMask(i.prefix!)}`))
       }
@@ -109,8 +121,9 @@ export function execute(
       let iface: string
       let cidr: string | undefined
       if (rest.length === 2) {
-        if (dev.ifaces.length !== 1) return err(`${dev.name} has several interfaces: ip set <iface> <ip/prefix>`)
-        iface = dev.ifaces[0].name
+        const net = netIfaces(dev)
+        if (net.length !== 1) return err(`${dev.name} has several interfaces: ip set <iface> <ip/prefix>`)
+        iface = net[0].name
         cidr = rest[1]
       } else {
         iface = rest[1]

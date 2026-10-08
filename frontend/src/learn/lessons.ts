@@ -97,6 +97,32 @@ const serverRole: Topic = {
   ],
 }
 
+const cabling: Topic = {
+  id: 'cables',
+  title: 'Choosing the right cable',
+  body: [
+    'Copper Ethernet has two wire pairs: one to send, one to receive. A PC sends on the pair a switch listens on, so PC↔switch uses a straight-through cable.',
+    'Two devices of the same kind (switch↔switch, router↔router, PC↔PC, and PC↔router, which both send on the "PC" pins) need a crossover cable, which swaps the pairs. With the wrong one the link stays down.',
+    'Fiber carries light: longer distances, no electrical interference, and it only fits fiber (SFP) ports, like the `g0/1` and `g0/2` uplinks on a switch.',
+    'A console cable is not a network cable. It joins a PC\'s `COM1` to a device\'s console port, so you can configure a brand-new router that has no IP yet. On the PC, type `console`.',
+    'Many modern ports fix straight-vs-crossover automatically (Auto-MDIX). NetSim follows the classic rule so you learn it; the Auto cable picks the right one for you.',
+  ],
+  diagram: ['PC ──straight── SW ──crossover── SW', 'PC ──crossover── PC      R ──crossover── R', 'PC COM1 ┄┄console┄┄ con0 R'].join('\n'),
+  examples: [{ title: 'With a console cable on COM1', commands: ['ifconfig', 'console'], note: 'Type `exit` to leave the device and come back to the PC.' }],
+}
+
+/** Same lesson on Cisco gear: check the cables from the device side. */
+const cablingIos: Topic = {
+  ...cabling,
+  examples: [
+    {
+      title: 'from the > prompt',
+      commands: ['show interfaces', 'show cdp neighbors'],
+      note: 'A wrong cable shows as "down" with the reason; CDP only lists neighbours behind working cables.',
+    },
+  ],
+}
+
 // ---------- IOS (shared) ----------
 
 const iosModes: Topic = {
@@ -324,12 +350,12 @@ const wifiSecurity: Topic = {
 }
 
 const TOPICS: Record<DeviceType, Topic[]> = {
-  pc: [ipBasics, gateway, testing, ports, sshClient],
+  pc: [ipBasics, gateway, testing, cabling, ports, sshClient],
   laptop: [wifi, ipBasics, gateway, testing, sshClient],
   server: [serverRole, ipBasics, gateway, testing, ports],
-  switch: [switching, iosModes, portAdmin, neighbors, saving],
+  switch: [switching, cablingIos, iosModes, portAdmin, neighbors, saving],
   ap: [apRole, apSecure, wifiSecurity, iosModes, saving],
-  router: [routing, iosModes, ifaceConfig, staticRoutes, troubleshooting, hardening, saving],
+  router: [routing, cablingIos, iosModes, ifaceConfig, staticRoutes, troubleshooting, hardening, saving],
   firewall: [firewalling, fwRules, iosModes, ifaceConfig, staticRoutes, saving],
 }
 

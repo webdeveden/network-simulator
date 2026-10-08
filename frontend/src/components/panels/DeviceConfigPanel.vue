@@ -3,7 +3,7 @@ import { ref, watch } from 'vue'
 import { parseRule } from '../../engine/commands'
 import { formatRule } from '../../engine/forwarding'
 import { isValidIp, parseCidr } from '../../engine/ip'
-import { DEVICE_CATALOG, getDevice, isHost, linkOn, peerOf, setIfaceIp } from '../../engine/network'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isConsolePort, isHost, linkActive, linkOn, peerOf, portKind, setIfaceIp } from '../../engine/network'
 import { useWorkspace } from '../../stores/workspace'
 import DeviceIcon from '../canvas/DeviceIcon.vue'
 
@@ -122,11 +122,14 @@ function doPing() {
       <h3 class="section">interfaces</h3>
       <div v-for="i in ws.selectedDevice.ifaces" :key="i.name" class="mb-2">
         <div class="flex justify-between text-[10px]">
-          <span class="text-cyan">{{ i.name }}</span>
+          <span class="text-cyan">
+            {{ i.name }}
+            <span v-if="portKind(ws.selectedDevice, i.name) !== 'copper'" class="text-dim">· {{ portKind(ws.selectedDevice, i.name) }}</span>
+          </span>
           <span class="text-dim">{{ peerLabel(i.name) }}</span>
         </div>
         <input
-          v-if="DEVICE_CATALOG[ws.selectedDevice.type].layer === 3"
+          v-if="DEVICE_CATALOG[ws.selectedDevice.type].layer === 3 && !isConsolePort(i.name)"
           v-model="drafts[i.name]"
           class="input mt-0.5"
           placeholder="ip/prefix e.g. 192.168.1.10/24"
@@ -198,15 +201,23 @@ function doPing() {
 
     <!-- Link -->
     <template v-else-if="ws.selectedLink">
-      <div class="text-sm font-semibold text-cyan">{{ ws.selectedLink.wifi ? `Wi-Fi · ${ws.selectedLink.wifi.ssid}` : 'Cable' }}</div>
+      <div class="text-sm font-semibold" :style="{ color: ws.selectedLink.wifi ? '#22d3ee' : CABLES[ws.selectedLink.cable ?? 'straight'].color }">
+        {{ ws.selectedLink.wifi ? `Wi-Fi · ${ws.selectedLink.wifi.ssid}` : `${CABLES[ws.selectedLink.cable ?? 'straight'].label} cable` }}
+      </div>
+      <p v-if="!ws.selectedLink.wifi" class="mt-1 text-[10px] text-dim">{{ CABLES[ws.selectedLink.cable ?? 'straight'].description.replace(/`/g, '') }}</p>
       <p class="mt-2">
         {{ getDevice(ws.topo, ws.selectedLink.a.device)?.name }} <span class="text-dim">{{ ws.selectedLink.a.iface }}</span>
         ⟷
         {{ getDevice(ws.topo, ws.selectedLink.b.device)?.name }} <span class="text-dim">{{ ws.selectedLink.b.iface }}</span>
       </p>
-      <p class="mt-2">
+      <p v-if="ws.selectedLink.cable === 'console'" class="mt-2">
+        status: <span class="text-cyan">management only</span>
+        <span class="block text-[10px] text-dim">Carries no network traffic. On the PC, type console.</span>
+      </p>
+      <p v-else class="mt-2">
         status:
-        <span :class="ws.selectedLink.up ? 'text-neon' : 'text-danger'">{{ ws.selectedLink.up ? 'UP' : 'DOWN' }}</span>
+        <span :class="linkActive(ws.topo, ws.selectedLink) ? 'text-neon' : 'text-danger'">{{ linkActive(ws.topo, ws.selectedLink) ? 'UP' : 'DOWN' }}</span>
+        <span v-if="cableProblem(ws.topo, ws.selectedLink)" class="mt-1 block text-[11px] text-danger">{{ cableProblem(ws.topo, ws.selectedLink) }}</span>
       </p>
       <div class="mt-3 flex gap-2">
         <button class="btn" @click="ws.selectedLink.up = !ws.selectedLink.up">

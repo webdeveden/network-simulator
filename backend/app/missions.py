@@ -44,6 +44,7 @@ MISSIONS: list[dict[str, Any]] = [
         ],
         "hints": [
             "Hover a PC to see its connection dots, then drag from one to the other PC to lay a cable.",
+            "Two PCs need a crossover cable (both send on the same wires). The Auto cable picks it for you; try Straight-through to see the link stay down.",
             "Both PCs need addresses in the same subnet, e.g. 192.168.0.1/24 and 192.168.0.2/24.",
             "Select PC1, then type in the terminal: ip set 192.168.0.1/24",
         ],
@@ -149,7 +150,7 @@ MISSIONS: list[dict[str, Any]] = [
             _ping("BR-PC can ping HQ-PC", "BR-PC", "HQ-PC"),
         ],
         "hints": [
-            "Cable R1 to R2. On both routers the cable lands on g0/1.",
+            "Cable R1 to R2 with a crossover cable (router to router). On both routers it lands on g0/1.",
             "Give the transit link 10.2.0.1/30 on R1 g0/1 and 10.2.0.2/30 on R2 g0/1.",
             "Select R1: enable, configure terminal, interface g0/1, ip address 10.2.0.1 255.255.255.252",
             "Still in config mode on R1: ip route 10.3.0.0 255.255.255.0 10.2.0.2. Then add the opposite route on R2.",

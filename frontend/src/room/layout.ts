@@ -3,7 +3,7 @@
  * can be unit tested. Units are metres; every device faces +z, towards the
  * player's spawn point.
  */
-import { isRadio } from '../engine/network'
+import { portKind, type PortKind } from '../engine/network'
 import type { Device, DeviceType, Topology } from '../engine/types'
 
 export type Station = 'rack' | 'desk'
@@ -107,17 +107,33 @@ export const onDesk = (d: Device) => d.type === 'pc' || d.type === 'laptop' || d
 
 /** Port positions on the panel (radios have none). Switches use two rows, odd ports on top, like Cisco. */
 export function portSpots(d: Device): PortSpot[] {
-  const wired = d.ifaces.filter((i) => !isRadio(i.name))
-  const n = wired.length
-  if (d.type === 'pc') return wired.map((i) => ({ iface: i.name, x: 0, y: 0.06 }))
-  if (d.type === 'ap') return wired.map((i) => ({ iface: i.name, x: 0.08, y: 0 }))
+  const of = (k: PortKind) => d.ifaces.filter((i) => portKind(d, i.name) === k).map((i) => i.name)
+  const copper = of('copper')
+  const fiber = of('fiber')
+  const consoles = of('console')
+  const at = (iface: string, x: number, y: number): PortSpot => ({ iface, x, y })
+  if (d.type === 'pc') return [...copper.map((n) => at(n, 0, 0.06)), ...consoles.map((n) => at(n, 0, -0.02))]
+  if (d.type === 'laptop') return []
+  if (d.type === 'ap') return [...copper.map((n) => at(n, 0.08, 0)), ...consoles.map((n) => at(n, 0.02, 0))]
+
+  const { w, h } = PANEL[d.type]
+  const spots: PortSpot[] = []
+  // Right to left: fiber cages, then the copper block; the console port sits bottom-left under the name.
+  let right = w / 2 - 0.03
   if (d.type === 'switch') {
-    const cols = Math.ceil(n / 2)
-    const x0 = PANEL.switch.w / 2 - 0.03 - (cols - 1) * PORT_PITCH
-    return wired.map((i, k) => ({ iface: i.name, x: x0 + Math.floor(k / 2) * PORT_PITCH, y: k % 2 === 0 ? 0.022 : -0.022 }))
+    fiber.forEach((n, k) => spots.push(at(n, right, k % 2 === 0 ? 0.022 : -0.022)))
+    if (fiber.length) right -= 0.075
+    const cols = Math.ceil(copper.length / 2)
+    const x0 = right - (cols - 1) * PORT_PITCH
+    copper.forEach((n, k) => spots.push(at(n, x0 + Math.floor(k / 2) * PORT_PITCH, k % 2 === 0 ? 0.022 : -0.022)))
+  } else {
+    fiber.forEach((n, k) => spots.push(at(n, right - k * 0.05, -0.01)))
+    if (fiber.length) right -= fiber.length * 0.05 + 0.02
+    const x0 = right - (copper.length - 1) * PORT_PITCH
+    copper.forEach((n, k) => spots.push(at(n, x0 + k * PORT_PITCH, -0.01)))
   }
-  const x0 = PANEL[d.type].w / 2 - 0.03 - (n - 1) * PORT_PITCH
-  return wired.map((i, k) => ({ iface: i.name, x: x0 + k * PORT_PITCH, y: -0.01 }))
+  consoles.forEach((n) => spots.push(at(n, -w / 2 + 0.05, -h / 2 + 0.016)))
+  return spots
 }
 
 /** Where rack k stands. Fixed per index, so adding racks never moves the existing ones. */

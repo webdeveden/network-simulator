@@ -1,5 +1,5 @@
 import { inSubnet, matchesSpec, networkOf } from './ip'
-import { DEVICE_CATALOG, getDevice, isBridge, isHost, linkActive, linkOn, linksOn, peerOf } from './network'
+import { cableProblem, DEVICE_CATALOG, getDevice, isBridge, isHost, linkActive, linkOn, linksOn, peerOf } from './network'
 import type { Device, FwRule, Hop, Iface, PingResult, Proto, Topology } from './types'
 
 const MAX_TTL = 32
@@ -104,7 +104,10 @@ function resolveL2(
 ): L2Found | string {
   const first = linkOn(topo, from.id, egress.name)
   if (!first) return `${egress.name} on ${from.name} is not cabled`
-  if (!linkActive(topo, first)) return `Link on ${from.name} ${egress.name} is down`
+  if (!linkActive(topo, first)) {
+    const why = cableProblem(topo, first)
+    return why ? `Link on ${from.name} ${egress.name} is down: ${why}` : `Link on ${from.name} ${egress.name} is down`
+  }
 
   type Node = { linkId: string; dev: string; iface: string; path: L2Step[] }
   const startPeer = peerOf(first, from.id, egress.name)

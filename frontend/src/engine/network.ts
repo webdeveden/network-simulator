@@ -1,25 +1,63 @@
 import { parseCidr } from './ip'
-import type { Device, DeviceType, Iface, Link, Topology } from './types'
+import type { CableChoice, CableType, Device, DeviceType, Iface, Link, Topology } from './types'
 
 export interface DeviceInfo {
   label: string
   prefix: string
   cost: number
   ifaces: string[]
+  /** Ports that take fiber (SFP) instead of copper RJ45. */
+  fiber?: string[]
   layer: 2 | 3
   description: string
 }
 
-export const CABLE_COST = 10
+export interface CableInfo {
+  label: string
+  cost: number
+  /** 2D/3D colour. */
+  color: string
+  description: string
+}
+
+export const CABLES: Record<CableType, CableInfo> = {
+  straight: {
+    label: 'Straight-through',
+    cost: 10,
+    color: '#22d3ee',
+    description: 'Cat6 copper. Joins different kinds of ports: PC, router, AP or firewall to a switch.',
+  },
+  crossover: {
+    label: 'Crossover',
+    cost: 10,
+    color: '#ff6bd6',
+    description: 'Cat6 copper with the send and receive pairs swapped. Joins like devices: switch↔switch, router↔router, PC↔PC, PC↔router.',
+  },
+  fiber: {
+    label: 'Fiber',
+    cost: 40,
+    color: '#ffb020',
+    description: 'Light instead of electricity: long distances, no interference. Only fits fiber (SFP) ports.',
+  },
+  console: {
+    label: 'Console',
+    cost: 15,
+    color: '#a5b4fc',
+    description: "Rollover cable from a PC's COM1 to a device's console port. No network traffic: type `console` on the PC to manage the device without an IP.",
+  },
+}
+
+/** Cost of the default copper cable. */
+export const CABLE_COST = CABLES.straight.cost
 
 export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
   pc: {
     label: 'PC',
     prefix: 'PC',
     cost: 100,
-    ifaces: ['eth0'],
+    ifaces: ['eth0', 'com1'],
     layer: 3,
-    description: 'End host. One NIC, needs an IP and a default gateway.',
+    description: 'End host. One NIC, needs an IP and a default gateway. COM1 takes a console cable.',
   },
   laptop: {
     label: 'Laptop',
@@ -41,7 +79,8 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
     label: 'Switch',
     prefix: 'SW',
     cost: 150,
-    ifaces: ['fa0/1', 'fa0/2', 'fa0/3', 'fa0/4', 'fa0/5', 'fa0/6', 'fa0/7', 'fa0/8'],
+    ifaces: ['fa0/1', 'fa0/2', 'fa0/3', 'fa0/4', 'fa0/5', 'fa0/6', 'fa0/7', 'fa0/8', 'g0/1', 'g0/2', 'con0'],
+    fiber: ['g0/1', 'g0/2'],
     layer: 2,
     description: 'Layer 2. Forwards frames inside one LAN by MAC address.',
   },
@@ -49,7 +88,7 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
     label: 'Access point',
     prefix: 'AP',
     cost: 250,
-    ifaces: ['g0/0', 'd0'],
+    ifaces: ['g0/0', 'd0', 'con0'],
     layer: 2,
     description: 'Layer 2. Bridges Wi-Fi clients on its radio (Dot11Radio0) to the wired LAN on g0/0.',
   },
@@ -57,7 +96,8 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
     label: 'Router',
     prefix: 'R',
     cost: 500,
-    ifaces: ['g0/0', 'g0/1', 'g0/2', 'g0/3'],
+    ifaces: ['g0/0', 'g0/1', 'g0/2', 'g0/3', 'g0/4', 'con0'],
+    fiber: ['g0/4'],
     layer: 3,
     description: 'Layer 3. Connects subnets and forwards packets using its routing table.',
   },
@@ -65,7 +105,8 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
     label: 'Firewall',
     prefix: 'FW',
     cost: 800,
-    ifaces: ['g0/0', 'g0/1', 'g0/2'],
+    ifaces: ['g0/0', 'g0/1', 'g0/2', 'g0/3', 'con0'],
+    fiber: ['g0/3'],
     layer: 3,
     description: 'A router that filters traffic with ordered allow/deny rules.',
   },
@@ -76,6 +117,59 @@ export const isHost = (d: Device) => d.type === 'pc' || d.type === 'laptop' || d
 export const isBridge = (d: Device) => d.type === 'switch' || d.type === 'ap'
 /** Radio interfaces take Wi-Fi associations, never cables. */
 export const isRadio = (iface: string) => iface === 'd0' || iface === 'wlan0'
+/** Serial management ports: con0 on network gear, com1 on PCs. They never carry network traffic. */
+export const isConsolePort = (iface: string) => iface === 'con0' || iface === 'com1'
+/** Ports that carry network traffic (everything but console ports). */
+export const netIfaces = (d: Device) => d.ifaces.filter((i) => !isConsolePort(i.name))
+
+export type PortKind = 'copper' | 'fiber' | 'console' | 'radio'
+
+export function portKind(d: Device, iface: string): PortKind {
+  if (isRadio(iface)) return 'radio'
+  if (isConsolePort(iface)) return 'console'
+  return DEVICE_CATALOG[d.type].fiber?.includes(iface) ? 'fiber' : 'copper'
+}
+
+/** Switches cross over internally (MDI-X); everything else transmits on the "PC" pins (MDI). */
+const crossesInternally = (d: Device) => d.type === 'switch'
+
+/** The copper cable two devices need: crossover between like ports, straight between unlike. */
+export function copperFor(a: Device, b: Device): 'straight' | 'crossover' {
+  return crossesInternally(a) === crossesInternally(b) ? 'crossover' : 'straight'
+}
+
+/**
+ * The cable to lay between two ports for the player's choice, or why it can't go there.
+ * Physical mismatches (copper into fiber, network cable into a console port) are refused;
+ * a wrong straight/crossover plugs in fine but the link stays down (see cableProblem).
+ */
+export function cableFor(choice: CableChoice, a: Device, aIface: string, b: Device, bIface: string): CableType | string {
+  const ka = portKind(a, aIface)
+  const kb = portKind(b, bIface)
+  const port = (d: Device, i: string, k: PortKind) => `${d.name} ${i} is a ${k === 'console' ? 'console' : k === 'fiber' ? 'fiber (SFP)' : 'copper RJ45'} port`
+  if (ka === 'radio' || kb === 'radio') return 'Radios connect over Wi-Fi, not by cable'
+  const want = choice === 'auto' ? (ka === kb ? (ka === 'copper' ? copperFor(a, b) : ka) : null) : choice
+  if (!want) return `${port(a, aIface, ka)} but ${port(b, bIface, kb)}: they can't be cabled together`
+  const need: PortKind = want === 'fiber' ? 'fiber' : want === 'console' ? 'console' : 'copper'
+  for (const [d, i, k] of [[a, aIface, ka], [b, bIface, kb]] as const)
+    if (k !== need) return `${port(d, i, k)}: a ${CABLES[want].label.toLowerCase()} cable doesn't fit`
+  if (want === 'console' && !((aIface === 'com1') !== (bIface === 'com1')))
+    return "A console cable goes from a PC's COM1 to a device's console port (con0)"
+  return want
+}
+
+/** Why a plugged-in cable can't carry traffic, or null if it's fine. */
+export function cableProblem(topo: Topology, link: Link): string | null {
+  if (link.cable !== 'straight' && link.cable !== 'crossover') return null
+  const a = getDevice(topo, link.a.device)
+  const b = getDevice(topo, link.b.device)
+  if (!a || !b) return null
+  const need = copperFor(a, b)
+  if (link.cable === need) return null
+  return need === 'crossover'
+    ? `${a.name}↔${b.name} needs a crossover cable: both ends transmit on the same pins (${a.type}↔${b.type})`
+    : `${a.name}↔${b.name} needs a straight-through cable: a switch already crosses the pairs internally`
+}
 
 function randomId(): string {
   return Math.random().toString(36).slice(2, 10)
@@ -144,7 +238,7 @@ export function peerOf(link: Link, deviceId: string, iface: string) {
 
 /** A cable carries traffic only if it is up and neither end is shut down. */
 export function linkActive(topo: Topology, link: Link): boolean {
-  if (!link.up) return false
+  if (!link.up || link.cable === 'console' || cableProblem(topo, link)) return false
   if (link.wifi) {
     const ap = getDevice(topo, link.a.device)
     if (!ap || wifiProblem(ap, link.wifi.ssid, link.wifi.key) !== null) return false
@@ -164,8 +258,8 @@ export function linksOn(topo: Topology, deviceId: string, iface?: string): Link[
   )
 }
 
-export function freeIface(topo: Topology, device: Device): Iface | undefined {
-  return device.ifaces.find((i) => !isRadio(i.name) && !linkOn(topo, device.id, i.name))
+export function freeIface(topo: Topology, device: Device, kind: PortKind = 'copper'): Iface | undefined {
+  return device.ifaces.find((i) => portKind(device, i.name) === kind && !linkOn(topo, device.id, i.name))
 }
 
 /** Why `ap` would refuse a client joining `ssid` with `key`, or null if it accepts. */
@@ -183,8 +277,8 @@ export function wifiProblem(ap: Device, ssid: string, key: string | undefined): 
   return null
 }
 
-/** Cables two devices together on their first free interfaces. */
-export function connect(topo: Topology, aId: string, bId: string): Link | string {
+/** Cables two devices together on their first free ports that fit the cable. */
+export function connect(topo: Topology, aId: string, bId: string, choice: CableChoice = 'auto'): Link | string {
   if (aId === bId) return 'Cannot connect a device to itself'
   const a = getDevice(topo, aId)
   const b = getDevice(topo, bId)
@@ -195,32 +289,43 @@ export function connect(topo: Topology, aId: string, bId: string): Link | string
       (l.a.device === b.id && l.b.device === a.id),
   )
   if (already) return `${a.name} and ${b.name} are already connected`
-  const ia = freeIface(topo, a)
-  const ib = freeIface(topo, b)
-  for (const d of [a, b]) if (d.type === 'laptop') return `${d.name} is a laptop: it joins over Wi-Fi (wifi connect <ssid> <password>), not by cable`
-  if (!ia) return `${a.name} has no free ports`
-  if (!ib) return `${b.name} has no free ports`
-  const link: Link = {
-    id: randomId(),
-    a: { device: a.id, iface: ia.name },
-    b: { device: b.id, iface: ib.name },
-    up: true,
+  for (const d of [a, b])
+    if (d.type === 'laptop' && choice !== 'console') return `${d.name} is a laptop: it joins over Wi-Fi (wifi connect <ssid> <password>), not by cable`
+  if (choice === 'console') {
+    const pc = [a, b].find((d) => d.ifaces.some((i) => i.name === 'com1'))
+    const gear = [a, b].find((d) => d.ifaces.some((i) => i.name === 'con0'))
+    if (!pc || !gear || pc === gear) return "A console cable goes from a PC's COM1 to a router, switch, firewall or AP's console port"
+    if (linkOn(topo, pc.id, 'com1')) return `${pc.name}'s COM1 already has a console cable`
+    if (linkOn(topo, gear.id, 'con0')) return `${gear.name}'s console port is already in use`
+    return connectPorts(topo, pc.id, 'com1', gear.id, 'con0', 'console')
   }
-  topo.links.push(link)
-  return link
+  // Auto prefers copper, and uses fiber when both ends only have fiber ports left.
+  const kind: PortKind = choice === 'fiber' ? 'fiber' : 'copper'
+  let ia = freeIface(topo, a, kind)
+  let ib = freeIface(topo, b, kind)
+  if (choice === 'auto' && (!ia || !ib)) {
+    const fa = freeIface(topo, a, 'fiber')
+    const fb = freeIface(topo, b, 'fiber')
+    if (fa && fb) [ia, ib] = [fa, fb]
+  }
+  const what = kind === 'fiber' ? 'fiber' : 'copper'
+  if (!ia) return `${a.name} has no free ${what} ports`
+  if (!ib) return `${b.name} has no free ${what} ports`
+  return connectPorts(topo, a.id, ia.name, b.id, ib.name, choice)
 }
 
 /** Cables two specific ports together (used when plugging cables by hand in the 3D room). */
-export function connectPorts(topo: Topology, aId: string, aIface: string, bId: string, bIface: string): Link | string {
+export function connectPorts(topo: Topology, aId: string, aIface: string, bId: string, bIface: string, choice: CableChoice = 'auto'): Link | string {
   const a = getDevice(topo, aId)
   const b = getDevice(topo, bId)
   if (!a || !b) return 'Unknown device'
   if (a.id === b.id) return 'Cannot connect a device to itself'
   if (!a.ifaces.some((i) => i.name === aIface) || !b.ifaces.some((i) => i.name === bIface)) return 'Unknown port'
-  if (isRadio(aIface) || isRadio(bIface)) return 'Radios connect over Wi-Fi, not by cable'
   if (linkOn(topo, a.id, aIface)) return `${a.name} ${aIface} already has a cable`
   if (linkOn(topo, b.id, bIface)) return `${b.name} ${bIface} already has a cable`
-  const link: Link = { id: randomId(), a: { device: a.id, iface: aIface }, b: { device: b.id, iface: bIface }, up: true }
+  const cable = cableFor(choice, a, aIface, b, bIface)
+  if (!(cable in CABLES)) return cable
+  const link: Link = { id: randomId(), a: { device: a.id, iface: aIface }, b: { device: b.id, iface: bIface }, up: true, cable: cable as CableType }
   topo.links.push(link)
   return link
 }
@@ -233,6 +338,7 @@ export function setIfaceIp(device: Device, ifaceName: string, cidr: string): str
   const iface = device.ifaces.find((i) => i.name === ifaceName)
   if (!iface) return `No interface ${ifaceName} on ${device.name}`
   if (DEVICE_CATALOG[device.type].layer === 2) return `${device.name} is a layer 2 switch: its ports have no IP`
+  if (isConsolePort(ifaceName)) return `${ifaceName} is a console port: it has no IP address`
   if (cidr === '' || cidr === 'none') {
     delete iface.ip
     delete iface.prefix
@@ -250,7 +356,7 @@ export function topologyCost(topo: Topology): number {
     topo.devices
       .filter((d) => !d.locked)
       .reduce((sum, d) => sum + DEVICE_CATALOG[d.type].cost, 0) +
-    topo.links.filter((l) => !l.wifi).length * CABLE_COST
+    topo.links.filter((l) => !l.wifi).reduce((sum, l) => sum + CABLES[l.cable ?? 'straight'].cost, 0)
   )
 }
 

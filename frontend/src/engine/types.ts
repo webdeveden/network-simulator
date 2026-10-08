@@ -92,6 +92,10 @@ export interface WlanConfig {
   aes?: boolean
 }
 
+export type CableType = 'straight' | 'crossover' | 'fiber' | 'console'
+/** What the player picked: a cable type, or let NetSim choose straight vs crossover. */
+export type CableChoice = CableType | 'auto'
+
 export interface LinkEnd {
   device: string
   iface: string
@@ -102,6 +106,8 @@ export interface Link {
   a: LinkEnd
   b: LinkEnd
   up: boolean
+  /** Physical cable. Missing on links saved before cable types existed: those always work. */
+  cable?: CableType
   /** Set on Wi-Fi associations (a = the AP radio, b = the client). Stays active only while the AP still accepts these credentials. */
   wifi?: { ssid: string; key?: string }
 }

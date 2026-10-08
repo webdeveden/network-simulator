@@ -4,7 +4,7 @@
  */
 import * as THREE from 'three'
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js'
-import { getDevice, linkActive, linkOn } from '../engine/network'
+import { CABLES, getDevice, linkActive, linkOn, portKind } from '../engine/network'
 import type { Device, Topology } from '../engine/types'
 import { collide, CUBE, DESK, MOUNT_GAP, MOUNT_TOP, PARTITION, panelHeight, RACK, rackHasRoom, roomLayout, TRAY_Y, type Cubicle, type Placement, type RackSpot, type RoomLayout } from './layout'
 
@@ -660,7 +660,9 @@ export class RoomScene {
       const mat = mesh.material as THREE.MeshStandardMaterial
       const sel = this.selection?.kind === 'link' && this.selection.id === id
       const hov = this.hover?.kind === 'cable' && this.hover.linkId === id
-      const base = sel ? COLORS.cableSel : l && linkActive(this.topo, l) ? COLORS.cable : COLORS.cableDown
+      // Colour by cable type; red when it can't carry traffic (console cables never do, by design).
+      const typed = new THREE.Color(CABLES[l?.cable ?? 'straight'].color).getHex()
+      const base = sel ? COLORS.cableSel : l?.cable === 'console' || (l && linkActive(this.topo, l)) ? typed : COLORS.cableDown
       mat.color.setHex(base)
       mat.emissive.setHex(base)
       mat.emissiveIntensity = sel || hov ? 0.7 : 0.15
@@ -1059,19 +1061,36 @@ export class RoomScene {
       const iface = d.ifaces.find((i) => i.name === s.iface)!
       const px = x + s.x
       const py = y + s.y
-      const socket = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.034, 0.012), new THREE.MeshStandardMaterial({ color: COLORS.socket, roughness: 0.9 }))
+      // RJ45 sockets are black, SFP fiber cages silver and slim, console ports framed in lavender.
+      const kind = portKind(d, s.iface)
+      const look = {
+        copper: { w: 0.04, h: 0.034, color: COLORS.socket, metal: 0 },
+        fiber: { w: 0.032, h: 0.02, color: 0x9aa6b8, metal: 0.8 },
+        console: { w: 0.032, h: 0.022, color: 0x3b3f6b, metal: 0 },
+        radio: { w: 0.03, h: 0.03, color: COLORS.socket, metal: 0 },
+      }[kind]
+      const socket = new THREE.Mesh(
+        new THREE.BoxGeometry(look.w, look.h, 0.012),
+        new THREE.MeshStandardMaterial({ color: look.color, metalness: look.metal, roughness: look.metal ? 0.35 : 0.9 }),
+      )
       socket.position.set(px, py, z + 0.002)
       g.add(this.target(socket, { kind: 'port', deviceId: d.id, iface: s.iface }))
       this.ports.set(portKey(d.id, s.iface), { pos: new THREE.Vector3(px, py, z + 0.01), station: p.station })
 
       const link = linkOn(this.topo, d.id, s.iface)
-      const ledColor = iface.shutdown ? COLORS.ledShut : !link ? 0x20262f : linkActive(this.topo, link) ? COLORS.ledUp : COLORS.ledDown
-      const led = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.005, 0.004), new THREE.MeshBasicMaterial({ color: ledColor, toneMapped: false }))
-      led.position.set(px - 0.012, py + 0.019 * (s.y < 0 && d.type === 'switch' ? -1 : 1), z + 0.003)
-      g.add(led)
+      if (kind !== 'console') {
+        const ledColor = iface.shutdown ? COLORS.ledShut : !link ? 0x20262f : linkActive(this.topo, link) ? COLORS.ledUp : COLORS.ledDown
+        const led = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.005, 0.004), new THREE.MeshBasicMaterial({ color: ledColor, toneMapped: false }))
+        led.position.set(px - 0.012, py + (look.h / 2 + 0.002) * (s.y < 0 && d.type === 'switch' ? -1 : 1), z + 0.003)
+        g.add(led)
+      }
 
       if (link) {
-        const plug = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.022, 0.05), new THREE.MeshStandardMaterial({ color: 0xd8e4f0, transparent: true, opacity: 0.85, roughness: 0.3 }))
+        const plugColor = new THREE.Color(CABLES[link.cable ?? 'straight'].color)
+        const plug = new THREE.Mesh(
+          new THREE.BoxGeometry(look.w * 0.75, look.h * 0.65, 0.05),
+          new THREE.MeshStandardMaterial({ color: plugColor, transparent: true, opacity: 0.9, roughness: 0.3 }),
+        )
         plug.position.set(px, py, z + 0.03)
         g.add(plug)
       }
@@ -1112,7 +1131,8 @@ export class RoomScene {
     const pts = [...end(a), ...end(b).reverse()]
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal')
     this.curves.set(linkId, curve)
-    const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 160, 0.0055, 6), new THREE.MeshStandardMaterial({ color: COLORS.cable, roughness: 0.6 }))
+    const radius = l.cable === 'fiber' ? 0.0035 : l.cable === 'console' ? 0.0045 : 0.0055
+    const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 160, radius, 6), new THREE.MeshStandardMaterial({ color: COLORS.cable, roughness: 0.6 }))
     this.world.add(this.target(mesh, { kind: 'cable', linkId }))
     this.cableMeshes.set(linkId, mesh)
   }
@@ -1156,9 +1176,14 @@ export class RoomScene {
       g.font = `bold 17px ${FONT}`
       g.textAlign = 'center'
       for (const s of p.ports) {
-        const label = d.type === 'switch' ? s.iface.split('/')[1] : s.iface
-        const dy = d.type === 'switch' ? (s.y > 0 ? 0.03 : -0.03) : d.type === 'ap' ? 0.035 : 0.03
-        g.fillText(label, toX(s.x), toY(s.y + dy))
+        const kind = portKind(d, s.iface)
+        const label = kind === 'console' ? 'CON' : kind === 'fiber' && d.type === 'switch' ? `G${s.iface.split('/')[1]}` : d.type === 'switch' ? s.iface.split('/')[1] : s.iface
+        g.fillStyle = kind === 'fiber' ? CABLES.fiber.color : kind === 'console' ? CABLES.console.color : '#9fb0c4'
+        if (kind === 'console') g.fillText(label, toX(s.x + 0.04), toY(s.y))
+        else {
+          const dy = d.type === 'switch' ? (s.y > 0 ? 0.03 : -0.03) : d.type === 'ap' ? 0.035 : 0.03
+          g.fillText(label, toX(s.x), toY(s.y + dy))
+        }
       }
       // Port surrounds.
       g.strokeStyle = '#3a4352'

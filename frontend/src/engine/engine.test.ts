@@ -160,7 +160,7 @@ describe('network editing', () => {
     expect(typeof connect(t, a.id, b.id)).toBe('object')
     expect(connect(t, a.id, b.id)).toMatch(/already connected/)
     const c = addDevice(t, 'pc')
-    expect(connect(t, a.id, c.id)).toMatch(/no free ports/)
+    expect(connect(t, a.id, c.id)).toMatch(/no free copper ports/)
     expect(setIfaceIp(a, 'eth0', '10.0.0.1')).toMatch(/CIDR/)
   })
 })

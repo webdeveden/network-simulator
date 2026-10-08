@@ -4,7 +4,8 @@ import type { CommandResult, Line } from '../engine/commands'
 import { emptySimState, sendPacket, type SimState } from '../engine/forwarding'
 import {
   addDevice,
-  CABLE_COST,
+  CABLES,
+  cableProblem,
   connect,
   connectPorts,
   DEVICE_CATALOG,
@@ -17,13 +18,22 @@ import {
 } from '../engine/network'
 import { moveDeviceInRack } from '../room/layout'
 import { completeLine, ctrlZ, newSession, promptOf, runLine, sessionIsIos, type Session } from '../engine/shell'
-import type { DeviceType, PingResult, Topology } from '../engine/types'
+import type { CableChoice, DeviceType, Link, PingResult, Topology } from '../engine/types'
 
 export const ALL_TYPES = Object.keys(DEVICE_CATALOG) as DeviceType[]
 
 export const STEP_MS = 380
 
 export type View = '2d' | '3d'
+
+function savedCable(): CableChoice {
+  try {
+    const c = localStorage.getItem('netsim.cable')
+    return c && (c === 'auto' || c in CABLES) ? (c as CableChoice) : 'auto'
+  } catch {
+    return 'auto'
+  }
+}
 
 function savedView(): View {
   try {
@@ -55,6 +65,8 @@ export const useWorkspace = defineStore('workspace', () => {
   const sim = shallowRef<SimState>(markRaw(emptySimState()))
   const selection = ref<Selection>(null)
   const view = ref<View>(savedView())
+  /** Cable type used for the next connection. */
+  const cable = ref<CableChoice>(savedCable())
   const palette = ref<DeviceType[]>(ALL_TYPES)
   const budget = ref<number | null>(null)
   const baselineCost = ref(0)
@@ -121,11 +133,31 @@ export const useWorkspace = defineStore('workspace', () => {
     return d
   }
 
+  function setCable(c: CableChoice) {
+    cable.value = c
+    try {
+      localStorage.setItem('netsim.cable', c)
+    } catch {
+      // Storage blocked: the choice just won't be remembered.
+    }
+  }
+
+  const cableCost = () => CABLES[cable.value === 'auto' ? 'straight' : cable.value].cost
+
+  /** Says what was laid, and warns right away when it's the wrong copper cable. */
+  function reportCable(l: Link) {
+    const name = CABLES[l.cable!].label.toLowerCase()
+    const problem = cableProblem(topo.value, l)
+    if (problem) notify(`Plugged in a ${name} cable, but the link is down: ${problem}`, 'err')
+    else notify(cable.value === 'auto' ? `Auto: ${name} cable` : `${CABLES[l.cable!].label} cable connected`)
+  }
+
   function link(a: string, b: string) {
-    if (!canAfford(CABLE_COST)) return
-    const r = connect(topo.value, a, b)
-    if (typeof r === 'string') notify(r, 'err')
-    else selection.value = { kind: 'link', id: r.id }
+    if (!canAfford(cableCost())) return
+    const r = connect(topo.value, a, b, cable.value)
+    if (typeof r === 'string') return notify(r, 'err')
+    selection.value = { kind: 'link', id: r.id }
+    reportCable(r)
   }
 
   function setView(v: View) {
@@ -138,12 +170,13 @@ export const useWorkspace = defineStore('workspace', () => {
   }
 
   function linkPorts(a: string, aIface: string, b: string, bIface: string): boolean {
-    if (!canAfford(CABLE_COST)) return false
-    const r = connectPorts(topo.value, a, aIface, b, bIface)
+    if (!canAfford(cableCost())) return false
+    const r = connectPorts(topo.value, a, aIface, b, bIface, cable.value)
     if (typeof r === 'string') {
       notify(r, 'err')
       return false
     }
+    reportCable(r)
     return true
   }
 
@@ -279,6 +312,8 @@ export const useWorkspace = defineStore('workspace', () => {
     selection,
     view,
     setView,
+    cable,
+    setCable,
     linkPorts,
     unplug,
     moveInRack,

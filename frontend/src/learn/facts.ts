@@ -4,7 +4,7 @@
  */
 import { routingTable } from '../engine/forwarding'
 import { inSubnet, intToIp, ipToInt, maskInt, networkOf, prefixToMask } from '../engine/ip'
-import { DEVICE_CATALOG, isHost, linkActive, linkOn, linksOn } from '../engine/network'
+import { cableProblem, DEVICE_CATALOG, isHost, linkActive, linkOn, linksOn, netIfaces } from '../engine/network'
 import { isIos } from '../engine/ios'
 import type { Device, Topology } from '../engine/types'
 
@@ -47,12 +47,12 @@ export function deviceFacts(topo: Topology, d: Device): Fact[] {
           ? { label: 'wi-fi', value: `"${l.wifi.ssid}" ${linkActive(topo, l) ? 'connected' : 'dropped by the AP'}`, tone: linkActive(topo, l) ? 'ok' : 'warn' }
           : { label: 'wi-fi', value: 'not connected', tone: 'warn' },
       )
-    else facts.push(l ? { label: 'cable', value: linkActive(topo, l) ? 'connected' : 'link down', tone: linkActive(topo, l) ? 'ok' : 'warn' } : { label: 'cable', value: 'not plugged in', tone: 'warn' })
+    else facts.push(l ? { label: 'cable', value: linkActive(topo, l) ? 'connected' : (cableProblem(topo, l) ?? 'link down'), tone: linkActive(topo, l) ? 'ok' : 'warn' } : { label: 'cable', value: 'not plugged in', tone: 'warn' })
     return facts
   }
 
   if (layer2) {
-    const wired = d.ifaces.filter((i) => i.name !== 'd0')
+    const wired = netIfaces(d).filter((i) => i.name !== 'd0')
     const used = wired.filter((i) => linkOn(topo, d.id, i.name)).length
     facts.push({ label: 'ports', value: `${used} of ${wired.length} cabled${d.type === 'switch' ? ', no IP needed (layer 2)' : ''}` })
     const shut = d.ifaces.filter((i) => i.shutdown).map((i) => i.name)

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { GraphNode } from '@vue-flow/core'
 import { computed } from 'vue'
-import { linkActive } from '../../engine/network'
+import { CABLES, linkActive } from '../../engine/network'
 import type { Link } from '../../engine/types'
 import { useWorkspace } from '../../stores/workspace'
 
@@ -32,6 +32,21 @@ const at = (f: number) => ({ x: s.value.x + (t.value.x - s.value.x) * f, y: s.va
 
 const up = computed(() => linkActive(ws.topo, props.data.link))
 const isSelected = computed(() => ws.selection?.kind === 'link' && ws.selection.id === props.id)
+const isConsole = computed(() => props.data.link.cable === 'console')
+/** Colour by cable type; red when the link can't carry traffic (except console cables, which never do). */
+const color = computed(() => {
+  const l = props.data.link
+  if (isSelected.value) return '#39ff88'
+  if (l.wifi) return up.value ? '#22d3ee' : '#ff4d5e'
+  if (isConsole.value) return CABLES.console.color
+  return up.value ? CABLES[l.cable ?? 'straight'].color : '#ff4d5e'
+})
+const dash = computed(() => {
+  const l = props.data.link
+  if (l.wifi) return '2 5'
+  if (isConsole.value) return '1 4'
+  return up.value ? undefined : '6 4'
+})
 const packet = computed(() => (ws.anim?.linkId === props.id ? ws.anim : null))
 </script>
 
@@ -41,10 +56,10 @@ const packet = computed(() => (ws.anim?.linkId === props.id ? ws.anim : null))
     <path
       :d="path"
       fill="none"
-      :stroke="isSelected ? '#39ff88' : up ? '#22d3ee' : '#ff4d5e'"
-      :stroke-opacity="isSelected ? 1 : 0.55"
-      :stroke-width="isSelected ? 2.5 : 1.8"
-      :stroke-dasharray="data.link.wifi ? '2 5' : up ? undefined : '6 4'"
+      :stroke="color"
+      :stroke-opacity="isSelected ? 1 : 0.7"
+      :stroke-width="isSelected ? 2.5 : data.link.cable === 'fiber' ? 2.4 : 1.8"
+      :stroke-dasharray="dash"
     />
     <text :x="at(labelF).x" :y="at(labelF).y - 4" class="fill-dim text-[9px]" text-anchor="middle">
       {{ data.link.a.iface }}

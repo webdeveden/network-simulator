@@ -6,7 +6,7 @@
 import { execute, type CommandResult } from './commands'
 import type { SimState } from './forwarding'
 import { answerPending, complete, iosPrompt, isIos, parseSshArgs, pendingPrompt, runIos, sshConnect, type Session } from './ios'
-import { getDevice } from './network'
+import { getDevice, linkOn } from './network'
 import type { Device, Topology } from './types'
 
 export type { Session } from './ios'
@@ -45,6 +45,21 @@ export function runLine(topo: Topology, state: SimState, s: Session, input: stri
   if (isIos(dev)) return runIos({ topo, state, s, f, dev, promptLen }, input)
 
   const [cmd, ...rest] = input.trim().split(/\s+/)
+  if (cmd === 'console') {
+    // Over the console cable: no IP needed, like plugging a laptop into a new router.
+    const l = linkOn(topo, dev.id, 'com1')
+    if (!l) return { lines: [{ text: `${dev.name} has no console cable on COM1. Plug one into a router, switch, firewall or AP console port.`, kind: 'err' }] }
+    const peer = l.a.device === dev.id ? l.b : l.a
+    const target = getDevice(topo, peer.device)
+    if (!target || !isIos(target)) return { lines: [{ text: 'Nothing answers on COM1', kind: 'err' }] }
+    s.frames.push({ deviceId: target.id, mode: 'user', remote: { user: 'console', ip: 'COM1', serial: true } })
+    return {
+      lines: [
+        { text: `Connected to ${target.name} on COM1 (9600 8N1). Press Enter if the prompt doesn't show.`, kind: 'muted' },
+        ...(target.ios?.banner ? [{ text: target.ios.banner, kind: 'info' as const }] : []),
+      ],
+    }
+  }
   if (cmd === 'ssh') {
     const a = parseSshArgs(rest)
     if (typeof a === 'string') return { lines: [{ text: a, kind: 'err' }] }

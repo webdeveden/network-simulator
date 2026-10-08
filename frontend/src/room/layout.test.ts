@@ -157,12 +157,24 @@ describe('room layout', () => {
     expect(p.x).toBeCloseTo(x + 0.1)
   })
 
-  it('lays switch ports out in two rows, inside the panel', () => {
-    const t = topo()
-    const sw = t.devices.find((d) => d.type === 'switch')!
-    const spots = portSpots(sw)
-    expect(new Set(spots.map((s) => s.y)).size).toBe(2)
-    for (const s of spots) expect(Math.abs(s.x)).toBeLessThan(0.22)
+  it.each(['switch', 'router', 'firewall'] as const)('lays out %s ports inside the panel without overlaps', (type) => {
+    const t = buildTopology({ devices: [{ type, name: 'X', x: 0, y: 0 }] })
+    const d = t.devices[0]
+    const spots = portSpots(d)
+    // Every cabled port has a spot (radios have none).
+    expect(spots.map((s) => s.iface).sort()).toEqual(d.ifaces.map((i) => i.name).filter((n) => n !== 'd0').sort())
+    const p = roomLayout(t).placements[0].panel
+    for (const s of spots) {
+      expect(Math.abs(s.x) + 0.02).toBeLessThanOrEqual(p.w / 2)
+      expect(Math.abs(s.y) + 0.014).toBeLessThanOrEqual(p.h / 2 + 0.005)
+    }
+    spots.forEach((a, i) =>
+      spots.slice(i + 1).forEach((b) => expect(Math.abs(a.x - b.x) >= 0.035 || Math.abs(a.y - b.y) >= 0.03, `${a.iface}/${b.iface}`).toBe(true)),
+    )
+    if (type === 'switch') {
+      const network = spots.filter((s) => s.iface !== 'con0')
+      expect(new Set(network.map((s) => s.y)).size).toBe(2)
+    }
   })
 })
 

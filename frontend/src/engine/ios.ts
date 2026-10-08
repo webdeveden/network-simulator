@@ -8,7 +8,7 @@
 import { execute, type CommandResult, type Line, type LineKind } from './commands'
 import { routingTable, sendPacket, type SimState } from './forwarding'
 import { inSubnet, ipToInt, isValidIp, maskInt, networkOf, prefixToMask } from './ip'
-import { DEVICE_CATALOG, getDevice, linkActive, linkOn, linksOn, peerOf } from './network'
+import { cableProblem, DEVICE_CATALOG, getDevice, linkActive, linkOn, linksOn, netIfaces, peerOf } from './network'
 import type { Device, DeviceType, FwRule, Iface, IosConfig, IosSecret, SsidConfig, Topology, VtyTransport, WlanConfig } from './types'
 
 export type Mode = 'user' | 'priv' | 'config' | 'if' | 'line' | 'ssid'
@@ -19,8 +19,8 @@ export interface Frame {
   iface?: string
   /** SSID being edited in `dot11 ssid` mode. */
   ssid?: string
-  /** Set when this frame was opened over SSH; `exit` closes the connection. */
-  remote?: { user: string; ip: string }
+  /** Set when this frame was opened from another device (SSH, or a console cable when `serial`); `exit` closes it. */
+  remote?: { user: string; ip: string; serial?: boolean }
 }
 
 export type Pending =
@@ -179,7 +179,7 @@ export function runningConfig(dev: Device): string[] {
     if (sc.psk) out.push(`   wpa-psk ascii ${enc ? '7 ' + type7(sc.psk) : '0 ' + sc.psk}`)
     out.push('!')
   }
-  for (const i of dev.ifaces) {
+  for (const i of netIfaces(dev)) {
     out.push(`interface ${longName(i.name)}`)
     if (i.description) out.push(` description ${i.description}`)
     if (i.name === 'd0') {
@@ -256,7 +256,7 @@ function ssidSetting(words: string[], help: string, set: (s: SsidConfig, on: boo
 function exitExec(c: Ctx): Result {
   if (c.f.remote) {
     c.s.frames.pop()
-    return [L(`[Connection to ${c.f.remote.ip} closed by foreign host]`, 'muted')]
+    return [L(c.f.remote.serial ? `[Console session on ${c.f.remote.ip} closed]` : `[Connection to ${c.f.remote.ip} closed by foreign host]`, 'muted')]
   }
   c.f.mode = 'user'
   return [L(''), L(`${c.dev.name} con0 is now available`, 'muted'), L(''), L('Press RETURN to get started.', 'muted')]
@@ -272,7 +272,7 @@ const SPECS: Spec[] = [
       if (c.f.mode === 'priv') return []
       const sec = c.dev.ios?.enable
       if (!sec) {
-        if (c.f.remote) return fail('% No password set', 'Remote (vty) sessions need an enable secret: conf t → enable secret <password>')
+        if (c.f.remote && !c.f.remote.serial) return fail('% No password set', 'Remote (vty) sessions need an enable secret: conf t → enable secret <password>')
         c.f.mode = 'priv'
         return []
       }
@@ -314,7 +314,7 @@ const SPECS: Spec[] = [
     help: 'Brief summary of IP status and configuration',
     run: (c) => {
       const lines = [L('Interface              IP-Address      OK? Method Status                Protocol', 'info')]
-      for (const i of c.dev.ifaces) {
+      for (const i of netIfaces(c.dev)) {
         const st = ifStatus(c.topo, c.dev, i)
         lines.push(
           L(
@@ -353,7 +353,7 @@ const SPECS: Spec[] = [
     help: 'Interface status and configuration',
     syntax: ['WORD  Interface name, e.g. g0/0', '<cr>'],
     run: (c, rest) => {
-      let list = c.dev.ifaces
+      let list = netIfaces(c.dev)
       if (rest.length) {
         const i = parseIface(c.dev, rest)
         if (!i) return fail(`% Invalid interface. ${c.dev.name} has: ${c.dev.ifaces.map((x) => x.name).join(', ')}`)
@@ -362,8 +362,11 @@ const SPECS: Spec[] = [
       return list.flatMap((i) => {
         const st = ifStatus(c.topo, c.dev, i)
         const kind = i.name.startsWith('g') ? 'Gigabit' : 'Fast'
+        const l = linkOn(c.topo, c.dev.id, i.name)
+        const problem = l && cableProblem(c.topo, l)
         return [
           L(`${longName(i.name)} is ${st.status}, line protocol is ${st.protocol}`, st.protocol === 'up' ? 'ok' : 'err'),
+          ...(problem ? [tip(problem)] : []),
           L(`  Hardware is NetSim ${kind} Ethernet, address is ${ciscoMac(i.mac)} (bia ${ciscoMac(i.mac)})`),
           ...(i.description ? [L(`  Description: ${i.description}`)] : []),
           ...(i.ip ? [L(`  Internet address is ${i.ip}/${i.prefix}`)] : []),
@@ -423,7 +426,7 @@ const SPECS: Spec[] = [
       L('NetSim IOS Software, Version 15.4(3)M, RELEASE SOFTWARE (fc1)'),
       L(`${c.dev.name} uptime is 4 hours, 2 minutes`),
       L(`netsim ${MODEL[c.dev.type]} processor with 524288K bytes of memory.`),
-      L(`${c.dev.ifaces.length} interfaces: ${c.dev.ifaces.map((i) => longName(i.name)).join(', ')}`),
+      L(`${netIfaces(c.dev).length} interfaces: ${netIfaces(c.dev).map((i) => longName(i.name)).join(', ')}`),
       L('Configuration register is 0x2102'),
     ],
   },

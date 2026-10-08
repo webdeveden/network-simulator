@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { longName } from '../../engine/ios'
-import { getDevice, linkOn, peerOf } from '../../engine/network'
+import { cableProblem, CABLES, getDevice, linkOn, peerOf, portKind } from '../../engine/network'
 import type { Device, DeviceType } from '../../engine/types'
 import { onDesk, roomLayout } from '../../room/layout'
 import { RoomScene, type RackDrag, type Target } from '../../room/RoomScene'
@@ -56,16 +56,20 @@ const hint = computed(() => {
   switch (t.kind) {
     case 'port': {
       const l = linkOn(ws.topo, t.deviceId, t.iface)
-      const label = `${name(t.deviceId)} · ${longName(t.iface)}`
+      const d = getDevice(ws.topo, t.deviceId)
+      const kind = d ? portKind(d, t.iface) : 'copper'
+      const label = `${name(t.deviceId)} · ${t.iface === 'con0' ? 'Console' : t.iface === 'com1' ? 'COM1' : longName(t.iface)}${kind === 'fiber' ? ' (fiber)' : kind === 'console' ? ' (console)' : ''}`
       if (carry.value) {
         if (carry.value.deviceId === t.deviceId && carry.value.iface === t.iface) return `${label} · Click: put the cable back`
         return l ? `${label} · already in use` : `${label} · Click: plug in`
       }
       if (l) {
         const peer = peerOf(l, t.deviceId, t.iface)
-        return `${label} → ${port(peer.device, peer.iface)} · Click: unplug · E: console`
+        const problem = cableProblem(ws.topo, l)
+        return `${label} → ${port(peer.device, peer.iface)} (${CABLES[l.cable ?? 'straight'].label.toLowerCase()})${problem ? ` · DOWN: ${problem}` : ''} · Click: unplug`
       }
-      return `${label} · free · Click: take a cable · E: console`
+      const fit = cableMismatch(kind)
+      return fit ? `${label} · free · ${fit}` : `${label} · free · Click: take a ${cableName.value} cable · E: console`
     }
     case 'device': {
       const d = getDevice(ws.topo, t.deviceId)
@@ -80,6 +84,19 @@ const hint = computed(() => {
   }
   return ''
 })
+
+const cableName = computed(() => (ws.cable === 'auto' ? 'auto' : CABLES[ws.cable].label.toLowerCase()))
+
+/** Why the selected cable can't go into this kind of port (null if it fits). Auto fits anything. */
+function cableMismatch(kind: string): string | null {
+  const c = ws.cable
+  if (c === 'auto') return null
+  if (kind === 'console' && c !== 'console') return 'A console port takes a console cable: pick Console in the cable list'
+  if (kind === 'fiber' && c !== 'fiber') return 'A fiber (SFP) port takes a fiber cable: pick Fiber in the cable list'
+  if (kind === 'copper' && (c === 'fiber' || c === 'console'))
+    return `A copper RJ45 port takes a straight-through or crossover cable, not ${CABLES[c].label.toLowerCase()}`
+  return null
+}
 
 function primary(t: Target | null) {
   if (carry.value) {
@@ -101,7 +118,12 @@ function primary(t: Target | null) {
       if (linkOn(ws.topo, t.deviceId, t.iface)) {
         ws.unplug(t.deviceId, t.iface)
         ws.notify(`Unplugged ${port(t.deviceId, t.iface)}`)
-      } else setCarry({ deviceId: t.deviceId, iface: t.iface })
+      } else {
+        const d = getDevice(ws.topo, t.deviceId)
+        const wrong = d && cableMismatch(portKind(d, t.iface))
+        if (wrong) ws.notify(wrong, 'err')
+        else setCarry({ deviceId: t.deviceId, iface: t.iface })
+      }
       break
     case 'door':
       scene?.toggleDoor(t.rack)
@@ -228,7 +250,7 @@ watch(
       v-if="carry"
       class="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 border border-neon bg-panel/90 px-3 py-1.5 text-xs text-neon"
     >
-      Holding a cable from {{ port(carry.deviceId, carry.iface) }} · click a free port to plug it in · Q / right-click to drop
+      Holding a {{ cableName }} cable from {{ port(carry.deviceId, carry.iface) }} · click a free port to plug it in · Q / right-click to drop
     </div>
 
     <!-- mode switch -->

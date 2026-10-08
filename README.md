@@ -25,6 +25,20 @@ Routers, switches and firewalls use IOS modes: `R1>` → `enable` → `R1#` → 
 
 Supported: `ip address`, `shutdown`, `description`, `ip route`, `hostname`, `enable secret`, `username`, `service password-encryption`, `banner motd`, `ip domain-name`, `crypto key generate rsa`, `ip ssh version 2`, `login local`, `transport input`, `write memory`, and `show` for `running-config`, `startup-config`, `ip interface brief`, `ip route`, `interfaces`, `arp`, `mac address-table`, `cdp neighbors`, `ip ssh` and `version`. On firewalls the `fw ...` rule commands still work.
 
+### Cables
+
+Pick a cable in the device list before connecting:
+
+| Cable | Use | If it's wrong |
+| --- | --- | --- |
+| Straight-through | unlike devices: PC, router, AP or firewall to a switch | link stays down, with the reason |
+| Crossover | like devices: switch↔switch, router↔router, PC↔PC, PC↔router | link stays down, with the reason |
+| Fiber | fiber (SFP) ports: `g0/1`–`g0/2` on switches, `g0/4` on routers, `g0/3` on firewalls | refused: it doesn't fit |
+| Console | a PC's `com1` to a device's `con0`; then `console` on the PC opens the device's CLI with no IP | carries no traffic |
+| Auto (default) | picks straight or crossover and says which | |
+
+The rules live in `src/engine/network.ts` (`cableFor`, `cableProblem`); `cables.test.ts` covers them.
+
 ### Wi-Fi
 
 Access points (AP) are layer 2 bridges. They have a wired uplink `g0/0` and a radio, `Dot11Radio0`, configured Aironet-style: `dot11 ssid OFFICE` → `authentication open`, `authentication key-management wpa version 2`, `wpa-psk ascii <key>`, `guest-mode`. Then `interface Dot11Radio0` → `encryption mode ciphers aes-ccm`, `ssid OFFICE`. `show dot11 associations` lists the clients.

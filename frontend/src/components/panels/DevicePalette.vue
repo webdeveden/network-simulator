@@ -1,10 +1,15 @@
 <script setup lang="ts">
-import { CABLE_COST, DEVICE_CATALOG } from '../../engine/network'
-import type { DeviceType } from '../../engine/types'
+import { CABLE_COST, CABLES, DEVICE_CATALOG } from '../../engine/network'
+import type { CableChoice, DeviceType } from '../../engine/types'
 import { useWorkspace } from '../../stores/workspace'
 import DeviceIcon from '../canvas/DeviceIcon.vue'
 
 const ws = useWorkspace()
+
+const CABLE_CHOICES: { id: CableChoice; label: string; cost: number; color: string; description: string }[] = [
+  { id: 'auto', label: 'Auto', cost: CABLES.straight.cost, color: '#c9d6e8', description: 'Picks straight-through or crossover for you, and tells you which.' },
+  ...(Object.entries(CABLES) as [Exclude<CableChoice, 'auto'>, (typeof CABLES)['straight']][]).map(([id, c]) => ({ id, ...c })),
+]
 
 function onDragStart(e: DragEvent, type: DeviceType) {
   e.dataTransfer?.setData('application/netsim-device', type)
@@ -38,6 +43,23 @@ function addCentered(type: DeviceType) {
       </div>
     </div>
     <div v-if="ws.palette.length === 0" class="text-[11px] text-dim">No devices to buy for this mission. Use what's already here.</div>
+
+    <div class="mt-2 text-[10px] tracking-[0.2em] text-dim uppercase">// cable</div>
+    <div class="flex flex-col gap-1">
+      <button
+        v-for="c in CABLE_CHOICES"
+        :key="c.id"
+        class="flex items-center gap-2 border px-2 py-1 text-left text-[11px] transition"
+        :class="ws.cable === c.id ? 'border-neon bg-panel-2 text-text' : 'border-line text-dim hover:border-dim hover:text-text'"
+        :title="c.description.replace(/`/g, '')"
+        @click="ws.setCable(c.id)"
+      >
+        <span class="h-0.5 w-5 shrink-0" :style="{ background: c.color }" />
+        <span class="flex-1">{{ c.label }}</span>
+        <span class="text-dim">${{ c.cost }}</span>
+      </button>
+    </div>
+    <p class="text-[10px] leading-relaxed text-dim">{{ CABLE_CHOICES.find((c) => c.id === ws.cable)?.description.replace(/`/g, '') }}</p>
 
     <div class="mt-3 border-t border-line pt-3 text-[10px] leading-relaxed text-dim">
       <div class="mb-1 tracking-[0.2em] uppercase">// how to</div>
