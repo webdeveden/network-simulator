@@ -15,6 +15,7 @@ import {
   removeDevice,
   topologyCost,
 } from '../engine/network'
+import { moveDeviceInRack } from '../room/layout'
 import { completeLine, ctrlZ, newSession, promptOf, runLine, sessionIsIos, type Session } from '../engine/shell'
 import type { DeviceType, PingResult, Topology } from '../engine/types'
 
@@ -153,6 +154,10 @@ export const useWorkspace = defineStore('workspace', () => {
     if (selection.value?.kind === 'link' && selection.value.id === l.id) selection.value = null
   }
 
+  function moveInRack(deviceId: string, rack: number, index: number): string | null {
+    return moveDeviceInRack(topo.value, deviceId, rack, index)
+  }
+
   function removeSelected() {
     const s = selection.value
     if (!s) return
@@ -276,6 +281,7 @@ export const useWorkspace = defineStore('workspace', () => {
     setView,
     linkPorts,
     unplug,
+    moveInRack,
     palette,
     budget,
     spent,

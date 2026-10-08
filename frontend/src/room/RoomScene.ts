@@ -6,13 +6,21 @@ import * as THREE from 'three'
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js'
 import { getDevice, linkActive, linkOn } from '../engine/network'
 import type { Device, Topology } from '../engine/types'
-import { collide, DESK, RACK, roomLayout, TRAY_Y, type Placement, type RackSpot, type RoomLayout } from './layout'
+import { collide, CUBE, DESK, MOUNT_GAP, MOUNT_TOP, PARTITION, panelHeight, RACK, rackHasRoom, roomLayout, TRAY_Y, type Cubicle, type Placement, type RackSpot, type RoomLayout } from './layout'
 
 export type Target =
   | { kind: 'port'; deviceId: string; iface: string }
   | { kind: 'door'; rack: number }
   | { kind: 'device'; deviceId: string }
   | { kind: 'cable'; linkId: string }
+
+export interface RackDrag {
+  deviceId: string
+  rack: number | null
+  /** Position in the rack, 0 = top. */
+  index: number
+  ok: boolean
+}
 
 export interface RoomEvents {
   hover(t: Target | null): void
@@ -23,6 +31,10 @@ export interface RoomEvents {
   use(t: Target | null): void
   /** Right click or Q. */
   cancel(): void
+  /** A rack device is being dragged: where it would land (rack null = not over a rack). */
+  dragging(d: RackDrag | null): void
+  /** A dragged rack device was dropped at a valid spot. */
+  move(deviceId: string, rack: number, index: number): void
 }
 
 const EYE = 1.65
@@ -30,6 +42,8 @@ const EYE = 1.65
 const REACH_FPS = 3.2
 const REACH_FREE = 6
 const LOOK_SPEED = 0.004
+/** Metres walked per pixel of two-finger scroll. */
+const WHEEL_SPEED = 0.006
 const PITCH_LIMIT = Math.PI / 2 - 0.05
 const WALL_H = 3.1
 
@@ -80,7 +94,7 @@ export class RoomScene {
   private camera: THREE.PerspectiveCamera
   private controls: PointerLockControls
   private world = new THREE.Group()
-  private layout: RoomLayout = { placements: [], racks: [], obstacles: [], bounds: { minX: -4, maxX: 4, minZ: -4, maxZ: 4 }, spawn: { x: 0, z: 2 } }
+  private layout: RoomLayout = { placements: [], racks: [], cubicles: [], obstacles: [], bounds: { minX: -4, maxX: 4, minZ: -4, maxZ: 4 }, spawn: { x: 0, z: 2 }, home: { x: 0, z: 2, look: [0, 1.2, -3] } }
   private topo: Topology = { devices: [], links: [] }
 
   private targets: THREE.Object3D[] = []
@@ -119,6 +133,7 @@ export class RoomScene {
     this.renderer = new THREE.WebGLRenderer({ antialias: true })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+    this.renderer.toneMappingExposure = 1.25
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     container.appendChild(this.renderer.domElement)
     this.renderer.domElement.style.display = 'block'
@@ -126,10 +141,12 @@ export class RoomScene {
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.03, 80)
     this.camera.position.set(0, EYE, 3)
     this.scene.background = new THREE.Color(COLORS.bg)
-    this.scene.fog = new THREE.Fog(COLORS.bg, 10, 30)
+    this.scene.fog = new THREE.Fog(COLORS.bg, 22, 50)
     this.scene.add(this.world)
     this.hoverBox.visible = false
     this.scene.add(this.hoverBox)
+    this.dropBar.visible = false
+    this.scene.add(this.dropBar)
     this.raycaster.far = REACH_FREE
 
     this.controls = new PointerLockControls(this.camera, this.renderer.domElement)
@@ -149,6 +166,7 @@ export class RoomScene {
     canvas.addEventListener('mouseover', this.onCanvasMove)
     canvas.addEventListener('mouseleave', this.onCanvasLeave)
     canvas.addEventListener('dblclick', this.onDoubleClick)
+    canvas.addEventListener('wheel', this.onWheel, { passive: false })
     canvas.addEventListener('contextmenu', (e) => e.preventDefault())
     window.addEventListener('mousemove', this.onLookMove)
     window.addEventListener('mouseup', this.onLookEnd)
@@ -170,6 +188,14 @@ export class RoomScene {
 
   unlock() {
     this.controls.unlock()
+  }
+
+  /** Back to the starting view: close up in front of rack 1, its door open. */
+  resetView() {
+    const h = this.layout.home
+    this.camera.position.set(h.x, EYE, h.z)
+    this.camera.lookAt(...h.look)
+    if (h.rack !== undefined) this.openDoors.add(h.rack)
   }
 
   /** Puts the player at (x, z) looking at a point. Used by `?debug` scripted tests. */
@@ -199,6 +225,7 @@ export class RoomScene {
 
     this.buildRoom()
     for (const r of this.layout.racks) this.buildRack(r)
+    for (const c of this.layout.cubicles) this.buildCubicle(c)
     for (const p of this.layout.placements) {
       const d = getDevice(topo, p.deviceId)
       if (!d) continue
@@ -212,8 +239,7 @@ export class RoomScene {
     if (this.carryFrom && !this.ports.has(this.carryFrom)) this.setCarry(null)
 
     if (!this.placed) {
-      this.camera.position.set(this.layout.spawn.x, EYE, this.layout.spawn.z)
-      this.camera.lookAt(0, 1.2, this.layout.spawn.z - 5)
+      this.resetView()
       this.placed = true
     } else {
       const p = collide(this.layout, this.camera.position.x, this.camera.position.z, 0, 0)
@@ -324,15 +350,16 @@ export class RoomScene {
   private looking = false
 
   /**
-   * Whether keys move you. In FPS mode always; in free mode when the room has
-   * focus, or nothing does and the mouse is over the room (never while a
-   * console window or a text field is focused).
+   * Whether keys move you. In FPS mode always. In free mode when the room has
+   * focus or the mouse is over it, but never while you're typing: a console
+   * window, a text field. (A focused button, like the 3D toggle, doesn't count.)
    */
   private roomActive(): boolean {
     if (this.controls.isLocked) return true
-    const a = document.activeElement
-    if (a === this.renderer.domElement) return true
-    return (!a || a === document.body) && this.pointer !== null
+    const a = document.activeElement as HTMLElement | null
+    const typing = !!a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT' || a.isContentEditable)
+    if (typing) return false
+    return a === this.renderer.domElement || this.pointer !== null
   }
 
   private onCanvasMove = (e: MouseEvent) => {
@@ -343,6 +370,15 @@ export class RoomScene {
   private onCanvasLeave = () => {
     this.pointer = null
   }
+
+  /** Pressed on a rack device: becomes a drag once the mouse moves a few pixels. */
+  private press: { deviceId: string; x: number; y: number } | null = null
+  private drag: RackDrag | null = null
+  /** Shows where a dragged device would be inserted. */
+  private dropBar = new THREE.Mesh(
+    new THREE.BoxGeometry(RACK.w - 0.08, 0.012, 0.02),
+    new THREE.MeshBasicMaterial({ color: COLORS.ledUp, toneMapped: false }),
+  )
 
   private onMouseDown = (e: MouseEvent) => {
     if (this.controls.isLocked) {
@@ -357,10 +393,23 @@ export class RoomScene {
       e.preventDefault()
       return
     }
-    if (e.button === 0) this.events.primary(this.hover)
+    if (e.button === 0) {
+      const t = this.hover
+      if (t?.kind === 'device' && this.layout.placements.find((p) => p.deviceId === t.deviceId)?.station === 'rack')
+        this.press = { deviceId: t.deviceId, x: e.clientX, y: e.clientY }
+      this.events.primary(t)
+    }
   }
 
   private onLookMove = (e: MouseEvent) => {
+    if (this.press) {
+      if (!this.drag && Math.hypot(e.clientX - this.press.x, e.clientY - this.press.y) > 6) {
+        this.drag = { deviceId: this.press.deviceId, rack: null, index: 0, ok: false }
+        this.renderer.domElement.style.cursor = 'grabbing'
+      }
+      if (this.drag) this.updateDrag(e.clientX, e.clientY)
+      return
+    }
     if (!this.looking) return
     const euler = new THREE.Euler(0, 0, 0, 'YXZ').setFromQuaternion(this.camera.quaternion)
     euler.y -= e.movementX * LOOK_SPEED
@@ -369,9 +418,36 @@ export class RoomScene {
   }
 
   private onLookEnd = () => {
+    if (this.press) {
+      const d = this.drag
+      this.press = null
+      this.drag = null
+      this.dropBar.visible = false
+      this.renderer.domElement.style.cursor = ''
+      this.applyHighlights()
+      if (d) {
+        this.events.dragging(null)
+        if (d.ok && d.rack !== null) this.events.move(d.deviceId, d.rack, d.index)
+      }
+      return
+    }
     if (!this.looking) return
     this.looking = false
     this.renderer.domElement.style.cursor = ''
+  }
+
+  /**
+   * Two-finger swipe (or mouse wheel) walks, like the arrow keys. With macOS natural
+   * scrolling, fingers up gives deltaY > 0 and fingers left gives deltaX > 0, so the
+   * room moves the way the fingers do. Pinch (ctrl+wheel) is swallowed so the page
+   * doesn't zoom.
+   */
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault()
+    if (e.ctrlKey || this.drag) return
+    const scale = (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1) * WHEEL_SPEED
+    const clamp = (v: number) => Math.max(-0.3, Math.min(0.3, v))
+    this.step(clamp(e.deltaY * scale), clamp(-e.deltaX * scale))
   }
 
   private onDoubleClick = () => {
@@ -391,6 +467,7 @@ export class RoomScene {
       e.preventDefault()
       this.events.use(this.hover)
     } else if (k === 'q') this.events.cancel()
+    else if (k === 'r' && !e.repeat) this.resetView()
     else if (k === 'f' && !e.repeat) {
       if (this.controls.isLocked) this.controls.unlock()
       else this.controls.lock()
@@ -430,14 +507,25 @@ export class RoomScene {
     const r = (k.has('KeyD') || k.has('ArrowRight') ? 1 : 0) - (k.has('KeyA') || k.has('ArrowLeft') ? 1 : 0)
     if (!f && !r) return
     const speed = (k.has('ShiftLeft') || k.has('ShiftRight') ? 4 : 2.2) * dt
+    const len = Math.hypot(f, r)
+    this.step((f / len) * speed, (r / len) * speed)
+  }
+
+  /** Walks `forward` and `right` metres relative to where the camera faces, with collisions. */
+  private step(forward: number, right: number) {
     const fwd = new THREE.Vector3()
     this.camera.getWorldDirection(fwd)
     fwd.y = 0
+    if (fwd.lengthSq() < 1e-6) return
     fwd.normalize()
-    const right = new THREE.Vector3().crossVectors(fwd, this.camera.up).normalize()
-    const v = fwd.multiplyScalar(f).add(right.multiplyScalar(r)).normalize().multiplyScalar(speed)
-    const p = collide(this.layout, this.camera.position.x, this.camera.position.z, v.x, v.z)
-    this.camera.position.set(p.x, EYE, p.z)
+    const side = new THREE.Vector3().crossVectors(fwd, this.camera.up).normalize()
+    const v = fwd.multiplyScalar(forward).add(side.multiplyScalar(right))
+    // Small sub-steps so a fast swipe can't jump through a thin wall.
+    const n = Math.ceil(v.length() / 0.1) || 1
+    for (let k = 0; k < n; k++) {
+      const p = collide(this.layout, this.camera.position.x, this.camera.position.z, v.x / n, v.z / n)
+      this.camera.position.set(p.x, EYE, p.z)
+    }
   }
 
   private animateDoors(dt: number) {
@@ -447,7 +535,46 @@ export class RoomScene {
     }
   }
 
+  /** Works out which rack and slot the cursor points at, and draws the insertion line. */
+  private updateDrag(clientX: number, clientY: number) {
+    const drag = this.drag!
+    const rack = this.rackAt(clientX, clientY)
+    const spot = rack === null ? undefined : this.layout.racks.find((r) => r.index === rack)
+    if (!spot) {
+      Object.assign(drag, { rack: null, ok: false })
+      this.dropBar.visible = false
+      this.events.dragging({ ...drag })
+      return
+    }
+    const others = this.layout.placements.filter((p) => p.rack === spot.index && p.deviceId !== drag.deviceId)
+    // Height the cursor points at, on the rack's front plane.
+    const r = this.renderer.domElement.getBoundingClientRect()
+    this.raycaster.setFromCamera(new THREE.Vector2(((clientX - r.left) / r.width) * 2 - 1, -((clientY - r.top) / r.height) * 2 + 1), this.camera)
+    const hit = this.raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 0, 1), -(spot.z - 0.06)), new THREE.Vector3())
+    const y = hit?.y ?? 0
+    const index = others.filter((p) => p.panel.y > y).length
+    const above = others[index - 1]
+    const below = others[index]
+    const barY = above
+      ? above.panel.y - above.panel.h / 2 - MOUNT_GAP / 2
+      : below
+        ? below.panel.y + below.panel.h / 2 + MOUNT_GAP / 2
+        : MOUNT_TOP
+    const dev = getDevice(this.topo, drag.deviceId)
+    const ok = !!dev && rackHasRoom([...others.map((p) => p.panel.h), panelHeight(dev.type)])
+    Object.assign(drag, { rack: spot.index, index, ok })
+    this.dropBar.position.set(spot.x, barY, spot.z - 0.03)
+    ;(this.dropBar.material as THREE.MeshBasicMaterial).color.setHex(ok ? COLORS.ledUp : COLORS.ledShut)
+    this.dropBar.visible = true
+    this.applyHighlights()
+    this.events.dragging({ ...drag })
+  }
+
   private pick() {
+    if (this.drag) {
+      if (this.hover) this.setHover(null, null)
+      return
+    }
     const fps = this.controls.isLocked
     // FPS aims with the crosshair; free mode with the cursor (nothing while dragging to look).
     const at = fps ? new THREE.Vector2(0, 0) : this.looking ? null : this.pointer
@@ -517,11 +644,16 @@ export class RoomScene {
 
   private applyHighlights() {
     for (const [id, mat] of this.chassis) {
+      if (this.drag?.deviceId === id) {
+        mat.emissive.setHex(COLORS.accent)
+        mat.emissiveIntensity = 0.35
+        continue
+      }
       const f = this.flash[id]
       const selected = this.selection?.kind === 'device' && this.selection.id === id
       const color = f === 'err' ? 0xff4d5e : f === 'ok' ? 0x39ff88 : f === 'hit' ? 0x22d3ee : selected ? 0x39ff88 : 0x000000
       mat.emissive.setHex(color)
-      mat.emissiveIntensity = f ? 0.55 : selected ? 0.06 : 0
+      mat.emissiveIntensity = f ? 0.55 : selected ? 0.025 : 0
     }
     for (const [id, mesh] of this.cableMeshes) {
       const l = this.topo.links.find((x) => x.id === id)
@@ -546,22 +678,39 @@ export class RoomScene {
 
     // Raised floor: 60 cm tiles, a perforated one every few tiles.
     const floorTex = canvasTexture(256, 256, (g) => {
-      g.fillStyle = '#1c222c'
+      g.fillStyle = '#2a313c'
       g.fillRect(0, 0, 256, 256)
-      g.strokeStyle = '#0c1016'
+      g.strokeStyle = '#161b22'
       g.lineWidth = 6
       g.strokeRect(0, 0, 256, 256)
-      g.fillStyle = '#141920'
+      g.fillStyle = '#1e242d'
       for (let y = 40; y < 220; y += 22) for (let x = 40; x < 220; x += 22) g.fillRect(x, y, 8, 8)
     })
-    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping
-    floorTex.repeat.set(w / 0.6, d / 0.6)
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.85, metalness: 0.2 }))
-    floor.rotation.x = -Math.PI / 2
-    floor.position.set(cx, 0, cz)
-    this.world.add(floor)
+    // Behind the glass partition: raised tiles. In front: office carpet.
+    const split = this.layout.partition?.z ?? (this.layout.cubicles.length ? b.minZ : b.maxZ)
+    const carpetTex = canvasTexture(256, 256, (g) => {
+      g.fillStyle = '#323b4a'
+      g.fillRect(0, 0, 256, 256)
+      // Speckled weave.
+      for (let k = 0; k < 2600; k++) {
+        g.fillStyle = k % 3 ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.08)'
+        g.fillRect((k * 97) % 256, (k * 57 + (k >> 4)) % 256, 2, 2)
+      }
+    })
+    const floorPart = (tex: THREE.CanvasTexture, z0: number, z1: number, tile: number, mat: { roughness: number; metalness: number }) => {
+      if (z1 - z0 <= 0) return
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+      tex.repeat.set(w / tile, (z1 - z0) / tile)
+      const f = new THREE.Mesh(new THREE.PlaneGeometry(w, z1 - z0), new THREE.MeshStandardMaterial({ map: tex, ...mat }))
+      f.rotation.x = -Math.PI / 2
+      f.position.set(cx, 0, (z0 + z1) / 2)
+      this.world.add(f)
+    }
+    floorPart(floorTex, b.minZ, split, 0.6, { roughness: 0.85, metalness: 0.2 })
+    floorPart(carpetTex, split, b.maxZ, 1.0, { roughness: 1, metalness: 0 })
+    if (this.layout.partition) this.buildPartition()
 
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x10151d, roughness: 0.95 })
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x2b3442, roughness: 0.95 })
     const walls: [number, number, number, number][] = [
       [cx, b.minZ, w, 0],
       [cx, b.maxZ, w, Math.PI],
@@ -580,26 +729,27 @@ export class RoomScene {
       strip.translateZ(0.01)
       this.world.add(strip)
     }
-    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ color: 0x0b0f15, roughness: 1 }))
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(w, d), new THREE.MeshStandardMaterial({ color: 0x3a4352, emissive: 0x1c222c, roughness: 1 }))
     ceiling.rotation.x = Math.PI / 2
     ceiling.position.set(cx, WALL_H, cz)
     this.world.add(ceiling)
 
-    this.world.add(new THREE.HemisphereLight(0x9fb8d8, 0x101418, 0.9))
-    // Ceiling light panels on a grid, with a few real lights.
+    // Even lighting everywhere: soft fill from all sides plus one overhead light.
+    // No point lights, so nothing gets darker with distance from a lamp.
+    this.world.add(new THREE.AmbientLight(0xdde8ff, 0.9))
+    this.world.add(new THREE.HemisphereLight(0xe8f0ff, 0x2a3140, 1.1))
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2)
+    sun.position.set(cx + 3, 12, cz + 6)
+    sun.target.position.set(cx, 0, cz)
+    this.world.add(sun, sun.target)
+    // Ceiling light panels on a grid (visual only).
     const panelMat = new THREE.MeshBasicMaterial({ color: 0xdde8ff, toneMapped: false })
-    let lights = 0
     for (let x = b.minX + 2; x < b.maxX - 1; x += 3)
       for (let z = b.minZ + 1.5; z < b.maxZ - 1; z += 3) {
         const p = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.3), panelMat)
         p.rotation.x = Math.PI / 2
         p.position.set(x, WALL_H - 0.01, z)
         this.world.add(p)
-        if (lights++ < 6) {
-          const l = new THREE.PointLight(0xdde8ff, 9, 9, 1.6)
-          l.position.set(x, WALL_H - 0.3, z)
-          this.world.add(l)
-        }
       }
 
     // Overhead tray above each rack row.
@@ -701,6 +851,106 @@ export class RoomScene {
     this.doors.set(p.index, pivot)
 
     this.world.add(g)
+  }
+
+  /** Glass wall with aluminium frame between the server room and the office. */
+  private buildPartition() {
+    const pt = this.layout.partition!
+    const frame = new THREE.MeshStandardMaterial({ color: 0x8a96a8, metalness: 0.8, roughness: 0.3 })
+    const glass = new THREE.MeshStandardMaterial({ color: 0x9fd4ff, transparent: true, opacity: 0.12, roughness: 0.05, side: THREE.DoubleSide, depthWrite: false })
+    const half = PARTITION.door / 2
+    const segment = (x0: number, x1: number) => {
+      if (x1 - x0 < 0.05) return
+      const g = new THREE.Mesh(new THREE.PlaneGeometry(x1 - x0, PARTITION.h), glass)
+      g.position.set((x0 + x1) / 2, PARTITION.h / 2, pt.z)
+      this.world.add(g)
+      for (const y of [0.05, PARTITION.h - 0.03]) {
+        const bar = new THREE.Mesh(new THREE.BoxGeometry(x1 - x0, 0.05, PARTITION.t), frame)
+        bar.position.set((x0 + x1) / 2, y, pt.z)
+        this.world.add(bar)
+      }
+      // Mullions every 1.2 m.
+      for (let x = x0; x <= x1 + 0.001; x += Math.max(0.6, (x1 - x0) / Math.max(1, Math.round((x1 - x0) / 1.2)))) {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(0.04, PARTITION.h, PARTITION.t), frame)
+        m.position.set(x, PARTITION.h / 2, pt.z)
+        this.world.add(m)
+      }
+    }
+    segment(pt.minX, pt.doorX - half)
+    segment(pt.doorX + half, pt.maxX)
+    // Door frame and a sign over it.
+    const head = new THREE.Mesh(new THREE.BoxGeometry(PARTITION.door, 0.08, PARTITION.t), frame)
+    head.position.set(pt.doorX, PARTITION.h - 0.04, pt.z)
+    this.world.add(head)
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.9, 0.18),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(400, 80, (g) => {
+          g.fillStyle = '#05080d'
+          g.fillRect(0, 0, 400, 80)
+          g.fillStyle = ACCENT_CSS
+          g.font = `bold 34px ${FONT}`
+          g.textAlign = 'center'
+          g.textBaseline = 'middle'
+          g.fillText('SERVER ROOM', 200, 42)
+        }),
+        toneMapped: false,
+      }),
+    )
+    sign.position.set(pt.doorX, PARTITION.h + 0.14, pt.z + 0.04)
+    this.world.add(sign)
+  }
+
+  /** Low fabric walls around a desk: back, left, and right on the row's last cubicle. */
+  private buildCubicle(c: Cubicle) {
+    const fabric = new THREE.MeshStandardMaterial({ color: 0x4a5870, roughness: 1 })
+    const trim = new THREE.MeshStandardMaterial({ color: 0x9aa6b8, metalness: 0.7, roughness: 0.35 })
+    const { w, d, wallH, wallT } = CUBE
+    const panel = (pw: number, pd: number, x: number, z: number) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(pw, wallH, pd), fabric)
+      m.position.set(x, wallH / 2, z)
+      this.world.add(m)
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(pw + 0.01, 0.025, pd + 0.01), trim)
+      cap.position.set(x, wallH, z)
+      this.world.add(cap)
+    }
+    panel(w, wallT, c.x, c.back + wallT / 2)
+    panel(wallT, d, c.x - w / 2, c.back + d / 2)
+    if (c.rightWall) panel(wallT, d, c.x + w / 2, c.back + d / 2)
+
+    // Name card standing on top of the back wall, so monitors never hide it.
+    const name = getDevice(this.topo, c.deviceId)?.name ?? '?'
+    const card = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.42, 0.1),
+      new THREE.MeshBasicMaterial({
+        map: canvasTexture(336, 80, (g) => {
+          g.fillStyle = '#e6edf7'
+          g.fillRect(0, 0, 336, 80)
+          g.fillStyle = '#0a0e14'
+          g.font = `bold 40px ${FONT}`
+          g.textAlign = 'center'
+          g.textBaseline = 'middle'
+          g.fillText(name, 168, 42)
+        }),
+      }),
+    )
+    card.position.set(c.x, wallH + 0.065, c.back + wallT / 2 + 0.014)
+    this.world.add(card)
+
+    // Office chair in front of the desk.
+    const dark = new THREE.MeshStandardMaterial({ color: 0x151a22, roughness: 0.8 })
+    // Pushed back and to the side, so it doesn't hide the desk from the aisle.
+    const cz = c.back + wallT + DESK.d + 0.45
+    const chairX = c.x + w / 2 - 0.35
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.07, 0.44), dark)
+    seat.position.set(chairX, 0.47, cz)
+    const back = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.32, 0.05), dark)
+    back.position.set(chairX, 0.68, cz + 0.21)
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.4, 8), trim)
+    pole.position.set(chairX, 0.24, cz)
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.03, 16), dark)
+    base.position.set(chairX, 0.03, cz)
+    this.world.add(seat, back, pole, base)
   }
 
   private buildDesk(d: Device, p: Placement) {

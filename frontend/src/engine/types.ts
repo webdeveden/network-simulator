@@ -42,6 +42,8 @@ export interface Device {
   locked?: boolean
   /** 3D room: preferred rack (0-based) for rack-mounted devices. */
   rack?: number
+  /** 3D room: position inside that rack, top first. Set when devices are rearranged by dragging. */
+  slot?: number
   /** Cisco-style settings for routers, switches and firewalls. */
   ios?: IosConfig
 }

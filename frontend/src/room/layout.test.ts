@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { addDevice, buildTopology, connectPorts, linkOn } from '../engine/network'
-import { collide, portSpots, RACK, roomLayout } from './layout'
+import { collide, CUBE, moveDeviceInRack, PARTITION, portSpots, RACK, roomLayout } from './layout'
 
 const topo = () =>
   buildTopology({
@@ -28,10 +28,12 @@ describe('room layout', () => {
   it('never overlaps furniture and keeps it inside the room', () => {
     const t = buildTopology({ devices: Array.from({ length: 20 }, (_, k) => ({ type: k % 3 ? 'router' : 'pc', name: `D${k}`, x: 0, y: 0 }) as const) })
     const l = roomLayout(t)
-    l.obstacles.forEach((a, i) => l.obstacles.slice(i + 1).forEach((b) => expect(overlaps(a, b)).toBe(false)))
+    // Furniture never overlaps. (Thin wall panels meet at cubicle corners; that's fine.)
+    const solid = l.obstacles.filter((o) => o.maxX - o.minX > 0.1 && o.maxZ - o.minZ > 0.1)
+    solid.forEach((a, i) => solid.slice(i + 1).forEach((b) => expect(overlaps(a, b)).toBe(false)))
     for (const o of l.obstacles) {
-      expect(o.minX).toBeGreaterThan(l.bounds.minX)
-      expect(o.maxX).toBeLessThan(l.bounds.maxX)
+      expect(o.minX).toBeGreaterThanOrEqual(l.bounds.minX)
+      expect(o.maxX).toBeLessThanOrEqual(l.bounds.maxX)
       expect(o.minZ).toBeGreaterThan(l.bounds.minZ)
       expect(o.maxZ).toBeLessThan(l.bounds.maxZ)
     }
@@ -73,9 +75,77 @@ describe('room layout', () => {
     for (const p of before) expect(after.find((q) => q.deviceId === p.deviceId)).toEqual(p)
   })
 
+  it('puts every desk in its own cubicle, in the office in front of the glass', () => {
+    const t = topo()
+    const l = roomLayout(t)
+    expect(l.cubicles.map((c) => c.deviceId)).toEqual([t.devices[0].id, t.devices[1].id])
+    expect(l.partition).toBeDefined()
+    for (const c of l.cubicles) expect(c.back).toBeGreaterThan(l.partition!.z)
+    for (const r of l.racks) expect(r.z).toBeLessThan(l.partition!.z)
+    // Only the last cubicle in a row draws its right wall; neighbours share walls.
+    expect(l.cubicles.map((c) => c.rightWall)).toEqual([false, true])
+    expect(l.cubicles[1].x - l.cubicles[0].x).toBeCloseTo(CUBE.w)
+  })
+
+  it('lets you walk through the doorway but not the glass', () => {
+    const l = roomLayout(topo())
+    const pt = l.partition!
+    const before = pt.z + 0.6
+    // Walk in game-sized steps (at most 0.2 m per frame).
+    const walk = (x: number) => {
+      let p = { x, z: before }
+      for (let k = 0; k < 12; k++) p = collide(l, p.x, p.z, 0, -0.1)
+      return p
+    }
+    expect(walk(pt.doorX).z).toBeCloseTo(before - 1.2)
+    expect(walk(pt.doorX + PARTITION.door / 2 + 0.8).z).toBeGreaterThan(pt.z)
+  })
+
+  it('rearranges devices inside a rack and between racks', () => {
+    const t = topo()
+    const [, , sw, r1, srv] = t.devices
+    const order = (k: number) => roomLayout(t).racks.find((r) => r.index === k)?.deviceIds
+    expect(order(0)).toEqual([sw.id, r1.id, srv.id])
+    expect(moveDeviceInRack(t, srv.id, 0, 0)).toBeNull()
+    expect(order(0)).toEqual([srv.id, sw.id, r1.id])
+    expect(moveDeviceInRack(t, sw.id, 1, 0)).toBeNull()
+    expect(order(0)).toEqual([srv.id, r1.id])
+    expect(order(1)).toEqual([sw.id])
+    // New devices still go into the first rack with room, without disturbing the order.
+    const r2 = addDevice(t, 'router')
+    expect(order(0)).toEqual([srv.id, r1.id, r2.id])
+    expect(moveDeviceInRack(t, t.devices[0].id, 0, 0)).toMatch(/Only rack-mounted/)
+  })
+
+  it('refuses to overfill a rack', () => {
+    const t = buildTopology({ devices: Array.from({ length: 12 }, (_, k) => ({ type: 'server', name: `S${k}`, x: 0, y: 0 }) as const) })
+    const l = roomLayout(t)
+    const inRack1 = l.racks[1].deviceIds[0]
+    expect(moveDeviceInRack(t, inRack1, 0, 0)).toMatch(/Rack 1 is full/)
+  })
+
   it('spawns the player in free space', () => {
     const l = roomLayout(topo())
     expect(collide(l, l.spawn.x, l.spawn.z, 0, 0)).toEqual(l.spawn)
+  })
+
+  it.each([
+    ['racks', topo()],
+    ['only desks', buildTopology({ devices: [{ type: 'pc', name: 'PC1', x: 0, y: 0 }] })],
+    ['empty room', buildTopology({ devices: [] })],
+  ])('starts close to the gear in free space (%s)', (_, t) => {
+    const l = roomLayout(t)
+    const free = (x: number, z: number) => collide(l, x - 0.01, z, 0.01, 0).x === x
+    expect(free(l.home.x, l.home.z)).toBe(true)
+    if (l.racks.length) {
+      expect(l.home.rack).toBe(0)
+      expect(l.home.z - l.racks[0].z).toBeLessThan(1.5)
+      expect(l.home.z).toBeLessThan(l.partition?.z ?? Infinity)
+      // Looks at the mounted devices, not the empty part of the rack.
+      const ys = l.placements.filter((p) => p.rack === 0).map((p) => p.panel.y)
+      expect(l.home.look[1]).toBeGreaterThanOrEqual(Math.min(...ys))
+      expect(l.home.look[1]).toBeLessThanOrEqual(Math.max(...ys))
+    }
   })
 
   it('stops the player at a rack and slides along it', () => {

@@ -42,15 +42,15 @@ function addCentered(type: DeviceType) {
     <div class="mt-3 border-t border-line pt-3 text-[10px] leading-relaxed text-dim">
       <div class="mb-1 tracking-[0.2em] uppercase">// how to</div>
       <template v-if="ws.view === '3d'">
-        <p>Drag a device onto a rack to mount it there, or double-click it to use the first rack with space. PCs, laptops and APs go on desks.</p>
-        <p class="mt-1">Right-drag (or Alt+drag) to look around, WASD to walk. Press F for first-person mode.</p>
+        <p>Drag a device onto a rack to mount it there, or double-click it to use the first rack with space. PCs, laptops and APs go on desks. Drag a mounted device up, down or into another rack to rearrange it.</p>
+        <p class="mt-1">Right-drag (or Alt+drag) to look around. WASD, arrow keys or a two-finger swipe to walk. Press F for first-person mode.</p>
         <p class="mt-1">Open a rack door, click a free port to take a cable (${{ CABLE_COST }}), then click another port to plug it in.</p>
         <p class="mt-1">Click a used port to unplug it. Press <kbd class="text-text">E</kbd> to open a device's console. Each device gets its own window.</p>
       </template>
       <template v-else>
         <p>Drag a device onto the grid, or double-click it.</p>
         <p class="mt-1">Cable (${{ CABLE_COST }}): drag from a device's edge dot to another device.</p>
-        <p class="mt-1">Click a device to configure it. Double-click it to open its console in a window you can move; open several to configure devices side by side.</p>
+        <p class="mt-1">Click a device to configure it. Double-click it, or select it and press <kbd class="text-text">E</kbd>, to open its console in a window you can move; open several to configure devices side by side.</p>
       </template>
       <p class="mt-1"><kbd class="text-text">Del</kbd> removes the selection.</p>
     </div>

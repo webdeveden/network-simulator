@@ -164,7 +164,14 @@ watch(
   },
 )
 
-defineExpose({ focus: () => term?.focus() })
+/** Puts text on the input line without running it (Learn tab examples). */
+function setInput(text: string) {
+  buffer = text
+  redrawInput()
+  term.focus()
+}
+
+defineExpose({ focus: () => term?.focus(), setInput })
 </script>
 
 <template>

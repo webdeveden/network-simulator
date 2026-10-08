@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { isIos } from '../../engine/ios'
 import { getDevice } from '../../engine/network'
 import { useWorkspace, type ConsoleWin } from '../../stores/workspace'
+import LearnPanel from './LearnPanel.vue'
 import TerminalPane from './TerminalPane.vue'
 
 const props = defineProps<{ win: ConsoleWin }>()
@@ -10,6 +11,19 @@ const ws = useWorkspace()
 const root = ref<HTMLDivElement>()
 const term = ref<InstanceType<typeof TerminalPane>>()
 const device = computed(() => getDevice(ws.topo, props.win.deviceId))
+const tab = ref<'console' | 'learn'>('console')
+
+/** A command clicked in the Learn tab goes onto the console's input line. */
+function typeCommand(cmd: string) {
+  tab.value = 'console'
+  nextTick(() => term.value?.setInput(cmd))
+}
+
+function selectTab(t: 'console' | 'learn') {
+  tab.value = t
+  if (t === 'console') nextTick(() => term.value?.focus())
+}
+
 const front = computed(() => Math.max(...ws.consoles.map((c) => c.z)) === props.win.z)
 
 let drag: { dx: number; dy: number } | null = null
@@ -86,8 +100,24 @@ onMounted(() => {
       </span>
       <button class="px-1 text-dim hover:text-danger" title="Close (Esc)" @click="ws.closeConsole(win.deviceId)">✕</button>
     </div>
-    <div class="min-h-0 flex-1">
+    <div class="flex border-b border-line bg-panel text-[11px]">
+      <button
+        v-for="t in (['console', 'learn'] as const)"
+        :key="t"
+        class="px-3 py-1 tracking-wider uppercase"
+        :class="tab === t ? 'border-b-2 border-neon text-neon' : 'text-dim hover:text-text'"
+        @click="selectTab(t)"
+      >
+        {{ t === 'console' ? 'Console' : 'Learn' }}
+      </button>
+    </div>
+    <!-- v-show keeps the terminal session and scrollback while reading lessons -->
+    <div v-show="tab === 'console'" class="min-h-0 flex-1">
       <TerminalPane ref="term" :device-id="win.deviceId" />
+    </div>
+    <!-- kept alive too, so returning to Learn keeps your place in the lesson -->
+    <div v-show="tab === 'learn'" class="min-h-0 flex-1">
+      <LearnPanel :device-id="win.deviceId" @type="typeCommand" />
     </div>
     <div class="border-t border-line px-3 py-0.5 text-[10px] text-dim">
       drag the title to move · drag the corner to resize · Esc closes

@@ -24,10 +24,14 @@ watch(
 )
 
 function onKey(e: KeyboardEvent) {
-  if (e.key !== 'Delete' && e.key !== 'Backspace') return
   const t = e.target as HTMLElement
-  if (t.closest('input, textarea, .xterm')) return
-  ws.removeSelected()
+  if (t.closest('input, textarea, .xterm') || e.ctrlKey || e.metaKey || e.altKey) return
+  if (e.key === 'Delete' || e.key === 'Backspace') ws.removeSelected()
+  // E opens the selected device's console. (The 3D room handles E itself, for what you point at.)
+  else if (e.key.toLowerCase() === 'e' && ws.view === '2d' && ws.selectedDevice) {
+    e.preventDefault()
+    ws.openConsole(ws.selectedDevice.id)
+  }
 }
 
 // A deleted device takes its console window with it.

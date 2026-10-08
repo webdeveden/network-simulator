@@ -4,7 +4,7 @@ import { longName } from '../../engine/ios'
 import { getDevice, linkOn, peerOf } from '../../engine/network'
 import type { Device, DeviceType } from '../../engine/types'
 import { onDesk, roomLayout } from '../../room/layout'
-import { RoomScene, type Target } from '../../room/RoomScene'
+import { RoomScene, type RackDrag, type Target } from '../../room/RoomScene'
 import { STEP_MS, useWorkspace } from '../../stores/workspace'
 
 const ws = useWorkspace()
@@ -12,6 +12,7 @@ const el = ref<HTMLDivElement>()
 const locked = ref(false)
 const hover = ref<Target | null>(null)
 const carry = ref<{ deviceId: string; iface: string } | null>(null)
+const drag = ref<RackDrag | null>(null)
 let scene: RoomScene | null = null
 
 function readHelp() {
@@ -37,12 +38,18 @@ const port = (deviceId: string, iface: string) => `${name(deviceId)} ${iface}`
 /** Changes that need the room rebuilt: devices, addresses, ports, cables. */
 const structure = computed(() =>
   JSON.stringify([
-    ws.topo.devices.map((d) => [d.id, d.type, d.name, d.gateway, d.ios?.wlan, d.ifaces.map((i) => [i.name, i.ip, i.prefix, i.shutdown])]),
+    ws.topo.devices.map((d) => [d.id, d.type, d.name, d.gateway, d.rack, d.slot, d.ios?.wlan, d.ifaces.map((i) => [i.name, i.ip, i.prefix, i.shutdown])]),
     ws.topo.links.map((l) => [l.id, l.a, l.b, l.up, l.wifi]),
   ]),
 )
 
 const hint = computed(() => {
+  const d = drag.value
+  if (d) {
+    if (d.rack === null) return `Moving ${name(d.deviceId)} · drop it onto a rack`
+    if (!d.ok) return `Rack ${d.rack + 1} is full`
+    return `Moving ${name(d.deviceId)} → rack ${d.rack + 1}, position ${d.index + 1} · release to drop`
+  }
   const t = hover.value
   if (!t) return carry.value ? 'Aim at a free port and click to plug the cable in' : ''
   if (t.kind === 'door') return `Rack ${t.rack + 1} · Click: ${scene?.isDoorOpen(t.rack) ? 'close' : 'open'} door`
@@ -62,7 +69,9 @@ const hint = computed(() => {
     }
     case 'device': {
       const d = getDevice(ws.topo, t.deviceId)
-      return d ? `${d.name} (${d.type}) · E: open console · Click: select` : ''
+      if (!d) return ''
+      const racked = !onDesk(d)
+      return `${d.name} (${d.type}) · E: open console · Click: select${racked ? ' · Drag: move in the rack' : ''}`
     }
     case 'cable': {
       const l = ws.topo.links.find((x) => x.id === t.linkId)
@@ -162,6 +171,13 @@ onMounted(() => {
     primary,
     use,
     cancel: () => setCarry(null),
+    dragging: (d) => (drag.value = d),
+    move: (id, rack, index) => {
+      const err = ws.moveInRack(id, rack, index)
+      if (err) return ws.notify(err, 'err')
+      scene?.openDoor(rack)
+      ws.notify(`${name(id)} moved to rack ${rack + 1}, position ${index + 1}`)
+    },
   })
   scene.sync(ws.topo)
   scene.setSelection(ws.selection)
@@ -202,7 +218,8 @@ watch(
     <!-- what you are looking at -->
     <div
       v-if="hint"
-      class="pointer-events-none absolute bottom-6 left-1/2 max-w-[90%] -translate-x-1/2 border border-line bg-panel/90 px-3 py-1.5 text-center text-xs text-text"
+      class="pointer-events-none absolute left-1/2 max-w-[90%] -translate-x-1/2 border border-line bg-panel/90 px-3 py-1.5 text-center text-xs text-text"
+      :class="!locked && showHelp ? 'bottom-24' : 'bottom-6'"
     >
       {{ hint }}
     </div>
@@ -224,6 +241,13 @@ watch(
       >
         ◎ FPS mode <span class="opacity-60">F</span>
       </button>
+      <button
+        class="border border-line bg-panel px-3 py-1 tracking-wider text-dim uppercase hover:text-neon"
+        title="Back to the starting view in front of rack 1 (R)"
+        @click="scene?.resetView()"
+      >
+        ↺ Reset view <span class="opacity-60">R</span>
+      </button>
       <span v-if="locked" class="border border-line bg-panel/90 px-2 py-1 text-dim">Esc to get the mouse back</span>
     </div>
 
@@ -234,10 +258,11 @@ watch(
     >
       <button class="float-right ml-3 text-dim hover:text-text" title="Hide" @click="hideHelp">✕</button>
       <span class="text-cyan">Right-drag</span> or <span class="text-cyan">Alt+drag</span> look ·
-      <span class="text-cyan">WASD</span> walk (Shift runs) ·
+      <span class="text-cyan">WASD</span> / <span class="text-cyan">two-finger swipe</span> walk (Shift runs) ·
       <span class="text-cyan">Click</span> doors, ports, cables ·
       <span class="text-cyan">E</span> / <span class="text-cyan">double-click</span> console ·
       <span class="text-cyan">Q</span> drop cable ·
+      <span class="text-cyan">R</span> reset view ·
       <span class="text-cyan">F</span> FPS mode
     </div>
   </div>
