@@ -60,13 +60,13 @@ const L = (text: string, kind: LineKind = 'out'): Line => ({ text, kind })
 const tip = (text: string): Line => L(`  ↳ ${text}`, 'muted')
 const fail = (text: string, ...tips: string[]): Line[] => [L(text, 'err'), ...tips.map(tip)]
 
-export const isIos = (d: Device) => d.type === 'router' || d.type === 'switch' || d.type === 'firewall' || d.type === 'ap'
+export const isIos = (d: Device) => d.type === 'router' || d.type === 'switch' || d.type === 'firewall' || d.type === 'ap' || d.type === 'isp'
 const isL2 = (d: Device) => DEVICE_CATALOG[d.type].layer === 2
 const conf = (d: Device): IosConfig => (d.ios ??= {})
 const wlan = (d: Device): WlanConfig => (conf(d).wlan ??= { ssids: {} })
 
-const MODEL: Record<string, string> = { router: 'NS-2911', switch: 'NS-2960', firewall: 'NS-ASA', ap: 'NS-AIR-2700' }
-const CAP: Record<string, string> = { router: 'R', switch: 'S', firewall: 'F', ap: 'T' }
+const MODEL: Record<string, string> = { router: 'NS-2911', switch: 'NS-2960', firewall: 'NS-ASA', ap: 'NS-AIR-2700', isp: 'NS-ISP-PE' }
+const CAP: Record<string, string> = { router: 'R', switch: 'S', firewall: 'F', ap: 'T', isp: 'R' }
 
 // ---------- names, masks, fake hashes ----------
 
@@ -222,7 +222,7 @@ const LINE: Mode[] = ['line']
 const SUB: Mode[] = ['config', 'if', 'line', 'ssid']
 const SSID: Mode[] = ['ssid']
 const AP: DeviceType[] = ['ap']
-const L3: DeviceType[] = ['router', 'firewall']
+const L3: DeviceType[] = ['router', 'firewall', 'isp']
 
 const HELP: Record<string, string> = {
   show: 'Show running system information',

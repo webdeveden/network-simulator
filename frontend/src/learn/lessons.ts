@@ -349,14 +349,83 @@ const wifiSecurity: Topic = {
   ],
 }
 
+const patchPanel: Topic = {
+  id: 'patch',
+  title: 'What a patch panel does',
+  body: [
+    'A patch panel is passive: no power, no IP, no console. It just organises cables. Each office wall jack has a permanent cable run to the rear of a panel port (punched down), and a short patch cord goes from the front of the same port to a switch.',
+    'Front port 5 is wired straight through to rear port 5. To move a desk to another switch port, you only swap a patch cord in the rack: nobody pulls cable through walls.',
+    'In NetSim: cable office PCs to the rear side (p1r…p48r) and the switch to the front (p1…p48) of the same port number. Auto does this for you on the 2D map.',
+  ],
+  diagram: ['PC ──wall jack ─ ─ ─ rear p5 │PATCH│ front p5 ──patch cord── SW1'].join('\n'),
+}
+
+const structured: Topic = {
+  id: 'structured',
+  title: 'Structured cabling: MDF and IDF',
+  body: [
+    'Buildings are wired in layers. The MDF (main distribution frame) is the main rack room, the server room here, where the core switches, routers and the ISP line live.',
+    'An IDF (intermediate distribution frame) is a smaller rack closer to the users, often a wall-mounted mini rack on each floor or wing. Desks are cabled to the nearest IDF; the IDF connects back to the MDF with an uplink, often fiber.',
+    'Each rack usually has a patch panel above its switch, so moves and changes are just a patch cord swap.',
+  ],
+  diagram: ['desks ── IDF (wall rack: patch + switch) ══fiber══ MDF (server room) ── ISP'].join('\n'),
+}
+
+const ispTopic: Topic = {
+  id: 'isp',
+  title: 'The ISP and the Internet',
+  body: [
+    'Your Internet Service Provider connects the company to the Internet. In NetSim it is a router outside the building with 8.8.8.8 on its loopback (lo0) standing for "the Internet".',
+    'Your edge router (or firewall) gets a default route towards the ISP, and the ISP needs a route back to your network. (Real ISPs never route private addresses: companies use NAT, coming later in NetSim.)',
+  ],
+  examples: [{ title: 'from the > prompt', commands: ['show ip interface brief', 'show ip route'] }],
+}
+
+const ontTopic: Topic = {
+  id: 'ont',
+  title: 'ONT and modem: where the Internet comes in',
+  body: [
+    'The ISP brings a line into the building: fiber, coax or copper. An ONT (optical network terminal, for fiber) or a modem converts it to ordinary Ethernet.',
+    'In NetSim the ISP cable goes into the ONT\'s fiber PON port, and one of its LAN ports goes to your edge router or firewall. The ONT itself is a bridge: no IP to configure.',
+  ],
+  diagram: ['ISP ══fiber══ pon [ONT] lan1 ──── EDGE router ── LAN'].join('\n'),
+}
+
+const printerTopic: Topic = {
+  id: 'printer',
+  title: 'Network printers',
+  body: [
+    'A network printer is just another host: it needs an IP in the office subnet and a gateway. Give it a fixed address so everyone\'s print settings keep working.',
+    'Print jobs arrive on TCP 9100 (raw) or 631 (IPP). A firewall rule can let only the office subnet print.',
+  ],
+  examples: [{ title: 'Give the printer an address', commands: ['ip set 192.168.1.50/24', 'gateway 192.168.1.1', 'ifconfig'] }],
+}
+
+const phoneTopic: Topic = {
+  id: 'voip',
+  title: 'IP phones (VoIP)',
+  body: [
+    'An IP phone sends calls as packets over the same network as PCs. It needs an IP and a gateway, and in real offices it often sits on its own voice VLAN so calls get priority.',
+    'IP phones have a built-in switch with two ports: eth0 goes to the wall jack (or switch), and the PC on the desk plugs into the phone\'s pc port. Phone and PC share one cable run back to the rack.',
+    'Cabling: PC → phone pc port is straight-through (the pc port is a switch port), phone eth0 → switch is straight-through too.',
+  ],
+  diagram: ['PC ──straight── [pc  TEL1  eth0] ──straight── SW1'].join('\n'),
+  examples: [{ title: 'Give the phone an address', commands: ['ip set 192.168.1.60/24', 'gateway 192.168.1.1', 'ping 192.168.1.1'] }],
+}
+
 const TOPICS: Record<DeviceType, Topic[]> = {
   pc: [ipBasics, gateway, testing, cabling, ports, sshClient],
   laptop: [wifi, ipBasics, gateway, testing, sshClient],
   server: [serverRole, ipBasics, gateway, testing, ports],
-  switch: [switching, cablingIos, iosModes, portAdmin, neighbors, saving],
+  switch: [switching, cablingIos, structured, iosModes, portAdmin, neighbors, saving],
   ap: [apRole, apSecure, wifiSecurity, iosModes, saving],
   router: [routing, cablingIos, iosModes, ifaceConfig, staticRoutes, troubleshooting, hardening, saving],
   firewall: [firewalling, fwRules, iosModes, ifaceConfig, staticRoutes, saving],
+  patch: [patchPanel, structured, cabling],
+  modem: [ontTopic, cabling, structured],
+  printer: [printerTopic, ipBasics, gateway, testing],
+  phone: [phoneTopic, ipBasics, gateway, testing],
+  isp: [ispTopic, routing, iosModes, ifaceConfig, staticRoutes],
 }
 
 export function topicsFor(type: DeviceType): Topic[] {

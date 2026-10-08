@@ -50,6 +50,9 @@ export const CABLES: Record<CableType, CableInfo> = {
 /** Cost of the default copper cable. */
 export const CABLE_COST = CABLES.straight.cost
 
+/** Patch panel ports: front p1..p48 and the rear (punch-down) side p1r..p48r. */
+const PATCH_PORTS = Array.from({ length: 48 }, (_, k) => `p${k + 1}`)
+
 export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
   pc: {
     label: 'PC',
@@ -101,6 +104,48 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
     layer: 3,
     description: 'Layer 3. Connects subnets and forwards packets using its routing table.',
   },
+  patch: {
+    label: 'Patch panel',
+    prefix: 'PP',
+    cost: 60,
+    ifaces: [...PATCH_PORTS, ...PATCH_PORTS.map((p) => `${p}r`)],
+    layer: 2,
+    description: '48 ports, passive. Front port N is wired straight through to rear port N: office cable runs land on the rear, patch cords go from the front to a switch.',
+  },
+  modem: {
+    label: 'ONT / modem',
+    prefix: 'ONT',
+    cost: 80,
+    ifaces: ['pon', 'lan1', 'lan2', 'lan3', 'lan4'],
+    fiber: ['pon'],
+    layer: 2,
+    description: "Where the ISP's line enters the building: the fiber PON port faces the ISP, the LAN ports go to your edge router. A layer 2 bridge.",
+  },
+  printer: {
+    label: 'Printer',
+    prefix: 'PRN',
+    cost: 300,
+    ifaces: ['eth0'],
+    layer: 3,
+    description: 'Network printer in an office. A host: needs an IP and a gateway; print jobs arrive on TCP 9100.',
+  },
+  phone: {
+    label: 'IP phone',
+    prefix: 'TEL',
+    cost: 90,
+    ifaces: ['eth0', 'pc'],
+    layer: 3,
+    description: 'Desk phone that talks over the network (VoIP). Two ports with a built-in switch: eth0 goes to the network, the PC on the desk plugs into the pc port. Needs an IP and a gateway.',
+  },
+  isp: {
+    label: 'ISP / Internet',
+    prefix: 'ISP',
+    cost: 0,
+    ifaces: ['pon0', 'g0/0', 'g0/1', 'g0/2', 'g0/3', 'lo0'],
+    fiber: ['pon0'],
+    layer: 3,
+    description: "Your Internet provider, outside the building (2D map only). Routes like a router; 8.8.8.8 on lo0 stands for 'the Internet'.",
+  },
   firewall: {
     label: 'Firewall',
     prefix: 'FW',
@@ -112,9 +157,15 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
   },
 }
 
-export const isHost = (d: Device) => d.type === 'pc' || d.type === 'laptop' || d.type === 'server'
+export const isHost = (d: Device) => ['pc', 'laptop', 'server', 'printer', 'phone'].includes(d.type)
 /** Layer 2 devices that forward frames between all their links. */
-export const isBridge = (d: Device) => d.type === 'switch' || d.type === 'ap'
+export const isBridge = (d: Device) => d.type === 'switch' || d.type === 'ap' || d.type === 'modem'
+/** Routes packets: routers, firewalls and the ISP. */
+export const isRouterLike = (d: Device) => d.type === 'router' || d.type === 'firewall' || d.type === 'isp'
+/** Outside the building: drawn on the 2D map only. */
+export const isOutside = (d: Device) => d.type === 'isp'
+/** A patch panel port's other side: p5 <-> p5r. */
+export const patchPartner = (iface: string) => (iface.endsWith('r') ? iface.slice(0, -1) : `${iface}r`)
 /** Radio interfaces take Wi-Fi associations, never cables. */
 export const isRadio = (iface: string) => iface === 'd0' || iface === 'wlan0'
 /** Serial management ports: con0 on network gear, com1 on PCs. They never carry network traffic. */
@@ -122,21 +173,28 @@ export const isConsolePort = (iface: string) => iface === 'con0' || iface === 'c
 /** Ports that carry network traffic (everything but console ports). */
 export const netIfaces = (d: Device) => d.ifaces.filter((i) => !isConsolePort(i.name))
 
-export type PortKind = 'copper' | 'fiber' | 'console' | 'radio'
+export type PortKind = 'copper' | 'fiber' | 'console' | 'radio' | 'virtual'
 
 export function portKind(d: Device, iface: string): PortKind {
   if (isRadio(iface)) return 'radio'
+  if (iface === 'lo0') return 'virtual'
   if (isConsolePort(iface)) return 'console'
   return DEVICE_CATALOG[d.type].fiber?.includes(iface) ? 'fiber' : 'copper'
 }
 
-/** Switches cross over internally (MDI-X); everything else transmits on the "PC" pins (MDI). */
-const crossesInternally = (d: Device) => d.type === 'switch'
+/**
+ * Switch ports cross over internally (MDI-X); everything else transmits on the "PC"
+ * pins (MDI). An IP phone's pc port is a switch port; its eth0 uplink is not.
+ */
+const crossesInternally = (d: Device, iface?: string) => d.type === 'switch' || d.type === 'modem' || (d.type === 'phone' && iface === 'pc')
 
-/** The copper cable two devices need: crossover between like ports, straight between unlike. */
-export function copperFor(a: Device, b: Device): 'straight' | 'crossover' {
-  return crossesInternally(a) === crossesInternally(b) ? 'crossover' : 'straight'
+/** The copper cable two ports need: crossover between like ports, straight between unlike. */
+export function copperFor(a: Device, b: Device, aIface?: string, bIface?: string): 'straight' | 'crossover' {
+  return crossesInternally(a, aIface) === crossesInternally(b, bIface) ? 'crossover' : 'straight'
 }
+
+/** A phone's pc port is part of its built-in switch: it has no IP of its own. */
+export const isPhonePcPort = (d: Device, iface: string) => d.type === 'phone' && iface === 'pc'
 
 /**
  * The cable to lay between two ports for the player's choice, or why it can't go there.
@@ -148,7 +206,8 @@ export function cableFor(choice: CableChoice, a: Device, aIface: string, b: Devi
   const kb = portKind(b, bIface)
   const port = (d: Device, i: string, k: PortKind) => `${d.name} ${i} is a ${k === 'console' ? 'console' : k === 'fiber' ? 'fiber (SFP)' : 'copper RJ45'} port`
   if (ka === 'radio' || kb === 'radio') return 'Radios connect over Wi-Fi, not by cable'
-  const want = choice === 'auto' ? (ka === kb ? (ka === 'copper' ? copperFor(a, b) : ka) : null) : choice
+  if (ka === 'virtual' || kb === 'virtual') return 'lo0 is a virtual (loopback) interface: no cable fits'
+  const want = choice === 'auto' ? (ka === kb ? (ka === 'copper' ? copperFor(a, b, aIface, bIface) : ka) : null) : choice
   if (!want) return `${port(a, aIface, ka)} but ${port(b, bIface, kb)}: they can't be cabled together`
   const need: PortKind = want === 'fiber' ? 'fiber' : want === 'console' ? 'console' : 'copper'
   for (const [d, i, k] of [[a, aIface, ka], [b, bIface, kb]] as const)
@@ -163,12 +222,13 @@ export function cableProblem(topo: Topology, link: Link): string | null {
   if (link.cable !== 'straight' && link.cable !== 'crossover') return null
   const a = getDevice(topo, link.a.device)
   const b = getDevice(topo, link.b.device)
-  if (!a || !b) return null
-  const need = copperFor(a, b)
+  // A patch panel is just wire: what matters is the gear at the far ends, so NetSim doesn't judge these.
+  if (!a || !b || a.type === 'patch' || b.type === 'patch') return null
+  const need = copperFor(a, b, link.a.device === a.id ? link.a.iface : link.b.iface, link.b.device === b.id ? link.b.iface : link.a.iface)
   if (link.cable === need) return null
   return need === 'crossover'
     ? `${a.name}↔${b.name} needs a crossover cable: both ends transmit on the same pins (${a.type}↔${b.type})`
-    : `${a.name}↔${b.name} needs a straight-through cable: a switch already crosses the pairs internally`
+    : `${a.name}↔${b.name} needs a straight-through cable: a switch port (or a phone's pc port) already crosses the pairs internally`
 }
 
 function randomId(): string {
@@ -193,7 +253,7 @@ export function nextName(topo: Topology, type: DeviceType): string {
 }
 
 export function createDevice(type: DeviceType, name: string, x = 0, y = 0): Device {
-  return {
+  const d: Device = {
     id: randomId(),
     name,
     type,
@@ -203,7 +263,11 @@ export function createDevice(type: DeviceType, name: string, x = 0, y = 0): Devi
     fwDefault: 'allow',
     x,
     y,
+    // The ISP comes with "the Internet" on a loopback, so there is always something to reach.
+    ...(type === 'isp' ? { w: 170, h: 110 } : {}),
   }
+  if (type === 'isp') setIfaceIp(d, 'lo0', '8.8.8.8/32')
+  return d
 }
 
 export function addDevice(topo: Topology, type: DeviceType, x = 0, y = 0): Device {
@@ -277,6 +341,26 @@ export function wifiProblem(ap: Device, ssid: string, key: string | undefined): 
   return null
 }
 
+/**
+ * Which patch panel port a new cable from `other` should use: rack gear patches into
+ * the front, everything else (office runs) lands on the rear. Prefer a port whose
+ * other side is already cabled, so the cable completes a circuit.
+ */
+function patchPort(topo: Topology, panel: Device, other: Device): Iface | undefined {
+  const office = other.type === 'pc' || other.type === 'laptop' || other.type === 'ap'
+  const front = !office
+  const side = (i: Iface) => (front ? !i.name.endsWith('r') : i.name.endsWith('r'))
+  const free = panel.ifaces.filter((i) => side(i) && !linkOn(topo, panel.id, i.name))
+  return free.find((i) => linkOn(topo, panel.id, patchPartner(i.name))) ?? free[0]
+}
+
+/** A phone takes its desk PC on the pc port and everything else on the eth0 uplink. */
+function phonePort(topo: Topology, phone: Device, other: Device): Iface | undefined {
+  if (phone.type !== 'phone') return undefined
+  const name = other.type === 'pc' || other.type === 'laptop' ? 'pc' : 'eth0'
+  return linkOn(topo, phone.id, name) ? undefined : phone.ifaces.find((i) => i.name === name)
+}
+
 /** Cables two devices together on their first free ports that fit the cable. */
 export function connect(topo: Topology, aId: string, bId: string, choice: CableChoice = 'auto'): Link | string {
   if (aId === bId) return 'Cannot connect a device to itself'
@@ -300,9 +384,11 @@ export function connect(topo: Topology, aId: string, bId: string, choice: CableC
     return connectPorts(topo, pc.id, 'com1', gear.id, 'con0', 'console')
   }
   // Auto prefers copper, and uses fiber when both ends only have fiber ports left.
-  const kind: PortKind = choice === 'fiber' ? 'fiber' : 'copper'
-  let ia = freeIface(topo, a, kind)
-  let ib = freeIface(topo, b, kind)
+  // The ISP's line into an ONT is always the fiber PON port.
+  const ispToOnt = (a.type === 'isp' && b.type === 'modem') || (a.type === 'modem' && b.type === 'isp')
+  const kind: PortKind = choice === 'fiber' || (choice === 'auto' && ispToOnt) ? 'fiber' : 'copper'
+  let ia = a.type === 'patch' ? patchPort(topo, a, b) : phonePort(topo, a, b) ?? freeIface(topo, a, kind)
+  let ib = b.type === 'patch' ? patchPort(topo, b, a) : phonePort(topo, b, a) ?? freeIface(topo, b, kind)
   if (choice === 'auto' && (!ia || !ib)) {
     const fa = freeIface(topo, a, 'fiber')
     const fb = freeIface(topo, b, 'fiber')
@@ -339,6 +425,7 @@ export function setIfaceIp(device: Device, ifaceName: string, cidr: string): str
   if (!iface) return `No interface ${ifaceName} on ${device.name}`
   if (DEVICE_CATALOG[device.type].layer === 2) return `${device.name} is a layer 2 switch: its ports have no IP`
   if (isConsolePort(ifaceName)) return `${ifaceName} is a console port: it has no IP address`
+  if (isPhonePcPort(device, ifaceName)) return `${ifaceName} is the phone's PC pass-through port: the phone's IP goes on eth0`
   if (cidr === '' || cidr === 'none') {
     delete iface.ip
     delete iface.prefix
@@ -369,6 +456,8 @@ export interface DeviceSpec {
   /** iface name -> CIDR */
   ifaces?: Record<string, string>
   gateway?: string
+  /** Office in the 3D building, for desk devices. */
+  room?: string
 }
 
 export interface TopologySpec {
@@ -383,6 +472,7 @@ export function buildTopology(spec: TopologySpec, locked = true): Topology {
     d.locked = locked
     for (const [name, cidr] of Object.entries(s.ifaces ?? {})) setIfaceIp(d, name, cidr)
     if (s.gateway) d.gateway = s.gateway
+    if (s.room) d.room = s.room
     topo.devices.push(d)
   }
   for (const [a, b] of spec.links ?? []) {

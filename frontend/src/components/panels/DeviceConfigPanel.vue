@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import { deskRoomsFor, onDesk, roomLabel, roomOf } from '../../room/layout'
 import { ref, watch } from 'vue'
 import { parseRule } from '../../engine/commands'
 import { formatRule } from '../../engine/forwarding'
 import { isValidIp, parseCidr } from '../../engine/ip'
-import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isConsolePort, isHost, linkActive, linkOn, peerOf, portKind, setIfaceIp } from '../../engine/network'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isConsolePort, isHost, isPhonePcPort, linkActive, linkOn, peerOf, portKind, setIfaceIp } from '../../engine/network'
 import { useWorkspace } from '../../stores/workspace'
 import DeviceIcon from '../canvas/DeviceIcon.vue'
 
@@ -119,6 +120,17 @@ function doPing() {
       </div>
       <p class="mt-2 text-[10px] text-dim">{{ DEVICE_CATALOG[ws.selectedDevice.type].description }}</p>
 
+      <template v-if="onDesk(ws.selectedDevice)">
+        <h3 class="section">room</h3>
+        <select
+          class="input"
+          :value="roomOf(ws.selectedDevice, ws.topo)"
+          @change="ws.moveToRoom(ws.selectedDevice.id, ($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="o in deskRoomsFor(ws.topo, ws.selectedDevice.type)" :key="o.id" :value="o.id">{{ roomLabel(ws.topo, o.id) }}</option>
+        </select>
+      </template>
+
       <h3 class="section">interfaces</h3>
       <div v-for="i in ws.selectedDevice.ifaces" :key="i.name" class="mb-2">
         <div class="flex justify-between text-[10px]">
@@ -129,7 +141,7 @@ function doPing() {
           <span class="text-dim">{{ peerLabel(i.name) }}</span>
         </div>
         <input
-          v-if="DEVICE_CATALOG[ws.selectedDevice.type].layer === 3 && !isConsolePort(i.name)"
+          v-if="DEVICE_CATALOG[ws.selectedDevice.type].layer === 3 && !isConsolePort(i.name) && !isPhonePcPort(ws.selectedDevice, i.name)"
           v-model="drafts[i.name]"
           class="input mt-0.5"
           placeholder="ip/prefix e.g. 192.168.1.10/24"

@@ -1,4 +1,4 @@
-export type DeviceType = 'pc' | 'laptop' | 'server' | 'switch' | 'ap' | 'router' | 'firewall'
+export type DeviceType = 'pc' | 'laptop' | 'server' | 'switch' | 'ap' | 'router' | 'firewall' | 'patch' | 'isp' | 'modem' | 'printer' | 'phone'
 
 export interface Iface {
   name: string
@@ -40,6 +40,13 @@ export interface Device {
   y: number
   /** Prebuilt by a mission: can be configured but not deleted. */
   locked?: boolean
+  /** 2D map size of the ISP cloud (it can be enlarged). */
+  w?: number
+  h?: number
+  /** 3D building: room a desk device is in (see room/layout roomsOf). Rack gear lives in its rack's room. */
+  room?: string
+  /** IP phone: the PC or laptop whose desk it sits on. */
+  deskOf?: string
   /** 3D room: preferred rack (0-based) for rack-mounted devices. */
   rack?: number
   /** 3D room: position inside that rack, top first. Set when devices are rearranged by dragging. */
@@ -112,9 +119,27 @@ export interface Link {
   wifi?: { ssid: string; key?: string }
 }
 
+export interface WallRack {
+  id: number
+  room: string
+  name: string
+}
+
 export interface Topology {
   devices: Device[]
   links: Link[]
+  /** Custom room names and colours, by room id (see room/layout roomsOf). Shared by the 2D map and the 3D building. */
+  rooms?: Record<string, { label?: string; color?: string }>
+  /** Built-in rooms the player deleted. */
+  removedRooms?: string[]
+  /** Rooms the player added: more offices east of the building, or balconies off the corridor. */
+  customRooms?: { id: string; label: string; kind: 'office' | 'balcony' }[]
+  /** 2D map spot of each rack (by rack index), so empty racks show up too. */
+  rackPos?: Record<number, { x: number; y: number }>
+  /** Floor racks (MDF) in the server room: at least this many, even if empty. */
+  serverRacks?: number
+  /** Wall-mounted mini racks (IDF) in offices. Ids start at WALL_RACK_BASE so they never clash with floor racks. */
+  wallRacks?: WallRack[]
 }
 
 export type HopAction = 'send' | 'switch' | 'route' | 'deliver' | 'drop'

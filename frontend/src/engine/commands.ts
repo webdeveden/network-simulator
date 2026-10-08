@@ -1,6 +1,6 @@
 import { formatRule, routingTable, sendPacket, type SimState } from './forwarding'
 import { isValidIp, parseCidr, prefixToMask } from './ip'
-import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, linkActive, linkOn, netIfaces, setIfaceIp, wifiProblem } from './network'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, isPhonePcPort, isRouterLike, linkActive, linkOn, netIfaces, setIfaceIp, wifiProblem } from './network'
 import type { Device, FwRule, PingResult, Proto, Topology } from './types'
 
 export type LineKind = 'out' | 'ok' | 'err' | 'info' | 'muted'
@@ -54,7 +54,6 @@ function resolveTarget(topo: Topology, arg: string | undefined): string | null {
   return d?.ifaces.find((i) => i.ip)?.ip ?? null
 }
 
-const isRouterLike = (d: Device) => d.type === 'router' || d.type === 'firewall'
 
 export function execute(
   topo: Topology,
@@ -121,7 +120,7 @@ export function execute(
       let iface: string
       let cidr: string | undefined
       if (rest.length === 2) {
-        const net = netIfaces(dev)
+        const net = netIfaces(dev).filter((i) => !isPhonePcPort(dev, i.name))
         if (net.length !== 1) return err(`${dev.name} has several interfaces: ip set <iface> <ip/prefix>`)
         iface = net[0].name
         cidr = rest[1]

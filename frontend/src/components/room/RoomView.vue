@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { longName } from '../../engine/ios'
 import { cableProblem, CABLES, getDevice, linkOn, peerOf, portKind } from '../../engine/network'
 import type { Device, DeviceType } from '../../engine/types'
-import { onDesk, roomLayout } from '../../room/layout'
+import { onDesk, roomColor, roomLabel, roomLayout, roomOf, roomsOf, type RoomId } from '../../room/layout'
 import { RoomScene, type RackDrag, type Target } from '../../room/RoomScene'
 import { STEP_MS, useWorkspace } from '../../stores/workspace'
 
@@ -13,6 +13,23 @@ const locked = ref(false)
 const hover = ref<Target | null>(null)
 const carry = ref<{ deviceId: string; iface: string } | null>(null)
 const drag = ref<RackDrag | null>(null)
+const whereAmI = ref('')
+const goMenu = ref(false)
+const rooms = computed(() => roomsOf(ws.topo).map((r) => ({ id: r.id, label: roomLabel(ws.topo, r.id), color: roomColor(ws.topo, r.id) })))
+function go(id: string) {
+  goMenu.value = false
+  scene?.goToRoom(id)
+}
+// "Go to" from the side menu (it may switch to 3D first, so wait for the scene).
+watch(
+  () => ws.goTo?.seq,
+  () => {
+    const g = ws.goTo
+    if (g) setTimeout(() => scene?.goToRoom(g.room), 50)
+  },
+)
+const overview = ref(false)
+const overviewHint = ref<string | null>(null)
 let scene: RoomScene | null = null
 
 function readHelp() {
@@ -40,11 +57,18 @@ const structure = computed(() =>
   JSON.stringify([
     ws.topo.devices.map((d) => [d.id, d.type, d.name, d.gateway, d.rack, d.slot, d.ios?.wlan, d.ifaces.map((i) => [i.name, i.ip, i.prefix, i.shutdown])]),
     ws.topo.links.map((l) => [l.id, l.a, l.b, l.up, l.wifi]),
+    ws.topo.rooms,
   ]),
 )
 
 const hint = computed(() => {
+  if (overview.value) return overviewHint.value ?? 'Drag to orbit · scroll or pinch to zoom · right-drag to pan · O to walk back in'
   const d = drag.value
+  if (d?.kind === 'room') {
+    if (!d.room) return `Moving ${name(d.deviceId)} · drop it on an office floor`
+    if (!d.ok) return `${d.room.label} has no desks: PCs, laptops and APs go in an office`
+    return `Moving ${name(d.deviceId)} → ${d.room.label} · release to drop`
+  }
   if (d) {
     if (d.rack === null) return `Moving ${name(d.deviceId)} · drop it onto a rack`
     if (!d.ok) return `Rack ${d.rack + 1} is full`
@@ -69,13 +93,13 @@ const hint = computed(() => {
         return `${label} → ${port(peer.device, peer.iface)} (${CABLES[l.cable ?? 'straight'].label.toLowerCase()})${problem ? ` · DOWN: ${problem}` : ''} · Click: unplug`
       }
       const fit = cableMismatch(kind)
-      return fit ? `${label} · free · ${fit}` : `${label} · free · Click: take a ${cableName.value} cable · E: console`
+      return fit ? `${label} · free · ${fit}` : `${label} · free · Click: take ${aCable.value} · E: console`
     }
     case 'device': {
       const d = getDevice(ws.topo, t.deviceId)
       if (!d) return ''
       const racked = !onDesk(d)
-      return `${d.name} (${d.type}) · E: open console · Click: select${racked ? ' · Drag: move in the rack' : ''}`
+      return `${d.name} (${d.type}) · E: open console · Click: select · Drag: ${racked ? 'move in the rack' : 'move to another office'}`
     }
     case 'cable': {
       const l = ws.topo.links.find((x) => x.id === t.linkId)
@@ -85,7 +109,8 @@ const hint = computed(() => {
   return ''
 })
 
-const cableName = computed(() => (ws.cable === 'auto' ? 'auto' : CABLES[ws.cable].label.toLowerCase()))
+/** "a cable" for Auto, else "a crossover cable" etc. */
+const aCable = computed(() => (ws.cable === 'auto' ? 'a cable' : `a ${CABLES[ws.cable].label.toLowerCase()} cable`))
 
 /** Why the selected cable can't go into this kind of port (null if it fits). Auto fits anything. */
 function cableMismatch(kind: string): string | null {
@@ -157,7 +182,7 @@ function onDrop(e: DragEvent) {
   const rack = onDesk({ type } as Device) ? undefined : (scene?.rackAt(e.clientX, e.clientY) ?? undefined)
   const n = ws.topo.devices.length
   droppedOn = rack
-  ws.add(type, 120 + (n % 5) * 130, 80 + Math.floor(n / 5) * 120, rack)
+  ws.requestAdd(type, 120 + (n % 5) * 130, 80 + Math.floor(n / 5) * 120, rack === undefined ? undefined : { rack })
 }
 
 // However a device was added (drop or double-click), open its rack and say where it went.
@@ -179,7 +204,8 @@ watch(
 
 function setCarry(c: { deviceId: string; iface: string } | null) {
   carry.value = c
-  scene?.setCarry(c)
+  // The carried cable (and the plug in your hand) shows the chosen type's colour.
+  scene?.setCarry(c, CABLES[ws.cable === 'auto' ? 'straight' : ws.cable].color)
 }
 
 onMounted(() => {
@@ -200,6 +226,18 @@ onMounted(() => {
       scene?.openDoor(rack)
       ws.notify(`${name(id)} moved to rack ${rack + 1}, position ${index + 1}`)
     },
+    moveToRoom: (id, room) => {
+      const d = getDevice(ws.topo, id)
+      if (!d || roomOf(d, ws.topo) === room) return
+      ws.moveToRoom(id, room)
+      ws.notify(`${d.name} moved to ${roomLabel(ws.topo, room as RoomId)}`)
+    },
+    location: (label) => (whereAmI.value = label),
+    overview: (on) => {
+      overview.value = on
+      if (on) setCarry(null)
+    },
+    overviewHint: (t) => (overviewHint.value = t),
   })
   scene.sync(ws.topo)
   scene.setSelection(ws.selection)
@@ -250,12 +288,21 @@ watch(
       v-if="carry"
       class="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 border border-neon bg-panel/90 px-3 py-1.5 text-xs text-neon"
     >
-      Holding a {{ cableName }} cable from {{ port(carry.deviceId, carry.iface) }} · click a free port to plug it in · Q / right-click to drop
+      Holding {{ aCable }} from {{ port(carry.deviceId, carry.iface) }} · click a free port to plug it in · Q / right-click to drop
+    </div>
+
+    <!-- where you are -->
+    <div
+      v-if="whereAmI"
+      class="pointer-events-none absolute top-14 left-3 z-20 border border-line bg-panel/90 px-2 py-0.5 text-[11px] tracking-wider text-cyan uppercase"
+    >
+      ◉ {{ whereAmI }}
     </div>
 
     <!-- mode switch -->
     <div class="absolute top-3 left-3 z-20 flex items-center gap-2 text-[11px]">
       <button
+        v-if="!overview"
         class="border px-3 py-1 tracking-wider uppercase"
         :class="locked ? 'border-neon bg-neon text-bg' : 'border-line bg-panel text-dim hover:text-neon'"
         title="First-person mode: the mouse turns the camera (F)"
@@ -263,6 +310,34 @@ watch(
       >
         ◎ FPS mode <span class="opacity-60">F</span>
       </button>
+      <button
+        class="border px-3 py-1 tracking-wider uppercase"
+        :class="overview ? 'border-neon bg-neon text-bg' : 'border-line bg-panel text-dim hover:text-neon'"
+        title="Zoom out to the whole company and the city around it (O, or pinch out)"
+        @click="overview ? scene?.exitOverview() : scene?.enterOverview()"
+      >
+        {{ overview ? '◉ Walk in' : '▣ Overview' }} <span class="opacity-60">O</span>
+      </button>
+      <div class="relative">
+        <button
+          class="border border-line bg-panel px-3 py-1 tracking-wider text-dim uppercase hover:text-neon"
+          title="Go straight to a room"
+          @click="goMenu = !goMenu"
+        >
+          ⇢ Go to ▾
+        </button>
+        <div v-if="goMenu" class="absolute top-full left-0 mt-1 min-w-44 border border-line bg-panel py-1 shadow-xl shadow-black">
+          <button
+            v-for="r in rooms"
+            :key="r.id"
+            class="flex w-full items-center gap-2 px-3 py-1 text-left text-text hover:bg-panel-2"
+            @click="go(r.id)"
+          >
+            <span class="h-2.5 w-2.5 rounded-sm" :style="{ background: r.color }" />
+            {{ r.label }}
+          </button>
+        </div>
+      </div>
       <button
         class="border border-line bg-panel px-3 py-1 tracking-wider text-dim uppercase hover:text-neon"
         title="Back to the starting view in front of rack 1 (R)"
@@ -279,12 +354,13 @@ watch(
       class="absolute bottom-3 left-3 z-20 max-w-[calc(100%-1.5rem)] border border-line bg-panel/90 px-3 py-2 text-[11px] leading-relaxed text-dim"
     >
       <button class="float-right ml-3 text-dim hover:text-text" title="Hide" @click="hideHelp">✕</button>
-      <span class="text-cyan">Right-drag</span> or <span class="text-cyan">Alt+drag</span> look ·
-      <span class="text-cyan">WASD</span> / <span class="text-cyan">two-finger swipe</span> walk (Shift runs) ·
+      <span class="text-cyan">W/S</span> walk (Shift runs) · <span class="text-cyan">A/D</span> turn ·
+      <span class="text-cyan">Right-drag</span> or <span class="text-cyan">Alt+drag</span> look around · <span class="text-cyan">two-finger swipe</span> walk/turn ·
       <span class="text-cyan">Click</span> doors, ports, cables ·
       <span class="text-cyan">E</span> / <span class="text-cyan">double-click</span> console ·
       <span class="text-cyan">Q</span> drop cable ·
       <span class="text-cyan">R</span> reset view ·
+      <span class="text-cyan">O</span> / pinch out: overview ·
       <span class="text-cyan">F</span> FPS mode
     </div>
   </div>

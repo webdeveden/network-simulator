@@ -47,13 +47,39 @@ Laptops have only `wlan0` and join with `wifi scan` and `wifi connect <ssid> <pa
 
 `ssh admin@10.0.0.1` from a PC, or `ssh -l admin 10.0.0.1` from IOS, opens a session on the remote device. The connection goes over TCP 22, so firewall rules apply. It works only once the target has RSA keys, allows SSH on its vty lines, and has a login set up.
 
+### Racks, patch panels and the ISP
+
+Adding a device asks where it goes: an existing rack, a new floor rack (MDF) in the server room, or a new wall-mounted mini rack (IDF) in an office; PCs, laptops and APs ask for an office. **＋ Add a rack** in the device list adds an empty one. Wall racks hang at chest height on the office's back wall and hold a few devices (a full one spills over to the server room).
+
+A **patch panel** has 48 front ports (p1–p48) wired straight through to 48 rear ports (p1r–p48r); traffic only passes between matching numbers. Auto cabling lands office devices on the rear and switches on the front of the same port. The **ISP** is a cloud on the 2D map only (drag its corner to enlarge it); it routes like a router and has 8.8.8.8 on lo0 for "the Internet".
+
+### Office equipment, balconies and new rooms
+
+- **ONT / modem:** a rack unit where the ISP's line comes in: the fiber `pon` port faces the ISP, `lan1`–`lan4` go to your edge router. A layer 2 bridge.
+- **Printer:** a host on a cabinet by the office door.
+- **IP phone:** a host with two ports and a built-in switch: `eth0` to the network, `pc` for the PC on the desk (both straight-through). The add dialog lists desks without a phone as checkboxes, with **All desks**. Cabling is up to you; a PC-to-phone cable lies on the desk, behind the monitor.
+- **＋ Add a room** in the device list adds an **office** (east end of the building) or a **balcony** (a terrace off the corridor, through a glass door, facing the city, with people working on laptops). Only laptops and APs go out on a balcony. APs hang from the ceiling in offices and on the outside wall by a balcony door.
+- The **Building** section of the side menu lists the rooms: click one to go there in 3D (or use **Go to ▾** in the 3D view), or 🗑 to delete an office or balcony (its devices move to another office). Side menu sections fold up.
+
+### Rooms on the 2D map
+
+The **▦ Rooms** toggle draws a labelled box around the devices in each room of the 3D building. Drag a box by its header to move the whole room. Drop a PC, laptop or AP into another office's box to move it there (rack gear stays in the server room). Double-click a room's name, or click ✎, to rename and recolour it; names and colours are saved with the network and also appear on the 3D door signs. Racks show as smaller boxes inside their room. **Tidy by room** lays the map out in one block per room (`src/room/groups.ts`).
+
 ### Learn tab
 
 Every console window has a **Learn** tab with lessons for that device type: IP addressing and gateways for PCs, Wi-Fi for laptops, MAC learning for switches, routing and static routes for routers, rules for firewalls, and SSIDs and WPA2 for access points. A "this device" card applies them to the device's actual settings (its subnet, whether its gateway is reachable, and so on). Clicking an example command types it into the console. Lessons live in `src/learn/lessons.ts`; `lessons.test.ts` runs every example command on a fresh device of that type, so a lesson can't teach a command the console rejects.
 
+### 3D building
+
+The 3D view is a small company floor: a corridor with a row of rooms behind it, the **Server room** (glass front, racks), the **IT office**, **Accounting** and **Sales**. Each room has a doorway with its name over it, and a label in the corner tells you where you are. PCs, laptops and APs sit in cubicles in an office (IT by default). Move them by dragging them onto another office's floor, or with the Room dropdown in the side panel; missions can place devices too (`"room": "sales"`). Rooms have fixed widths and grow deeper as they fill, so adding devices never moves anything already placed.
+
+**Overview:** press **O**, the minus key, the Overview button, or pinch out to fly up to an aerial view of the whole company with the roof cut away. The exterior has a facade, lawn, parking lot, roads and a night-time city (`src/room/city.ts`, seeded so it never changes). Drag to orbit, scroll or pinch to zoom, right-drag to pan. Click any spot in the building to fly down and stand there, or press O to go back to where you were.
+
+You see the world through the engineer's eyes. **W/S** walk, **A/D** turn (so you always face where you're going), right-drag looks around, and a two-finger swipe walks (up/down) and turns (left/right). A gloved right hand appears only for cable work: it holds the plug while you carry a cable (in that cable's colour) and reaches to the port when you plug in or unplug, then goes away. It's drawn in its own pass after the room, so it never clips into a rack (`src/room/hands.ts`).
+
 ### 3D server room
 
-The **3D room** toggle above the canvas switches to a first-person view of the same network. You start a metre from Rack 1 with its door open; "Reset view" (or R) brings you back there. Routers, switches, firewalls and servers stack top to bottom in shared racks; a new rack opens when one is full. Drag a device onto a rack to mount it there, and drag a mounted device (door open) to move it up, down or into another rack. PCs, laptops and access points each get a cubicle in the office, which is separated from the server room by a glass wall with a doorway. Adding a device never moves the ones already placed. The mouse stays free by default: right-drag (or Alt+drag) to look around, WASD, the arrow keys or a two-finger swipe (mouse wheel) to walk, and click what's under the cursor. Press F (or the FPS mode button) for first-person mode with a captured mouse and a crosshair; Esc leaves it. Click a rack door to open it. Click a free port to pick up a cable, then click another port to plug it in, or click a used port to unplug it. Press E or double-click to open the console of whatever you are pointing at, in a window you can move. Port LEDs show the link state, and pings move along the cables through the overhead tray.
+The **3D room** toggle above the canvas switches to a first-person view of the same network. You start a metre from Rack 1 with its door open; "Reset view" (or R) brings you back there. Routers, switches, firewalls and servers stack top to bottom in shared racks; a new rack opens when one is full. Drag a device onto a rack to mount it there, and drag a mounted device (door open) to move it up, down or into another rack. PCs, laptops and access points each get a cubicle in the office, which is separated from the server room by a glass wall with a doorway. Adding a device never moves the ones already placed. The mouse stays free by default: click what's under the cursor. Press F (or the FPS mode button) for first-person mode with a captured mouse and a crosshair; Esc leaves it. Click a rack door to open it. Click a free port to pick up a cable, then click another port to plug it in, or click a used port to unplug it. Press E or double-click to open the console of whatever you are pointing at, in a window you can move. Port LEDs show the link state, and pings move along the cables through the overhead tray.
 
 The room lives in `src/room/`. `layout.ts` is pure and unit-tested: it places furniture, ports and collision boxes. `RoomScene.ts` is the Three.js scene. Add `?debug` to the URL to get `window.room.teleport(x, z, [lx, ly, lz])` for scripted browser tests.
 

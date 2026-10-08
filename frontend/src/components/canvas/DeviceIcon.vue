@@ -22,6 +22,31 @@ defineProps<{ type: DeviceType; size?: number }>()
       <path d="M11.5 12.5a6 6 0 0 1 9 0M9 9.5a10 10 0 0 1 14 0" stroke-width="1.2" />
       <circle cx="9" cy="22.5" r=".8" fill="currentColor" />
     </template>
+    <template v-else-if="type === 'patch'">
+      <rect x="2" y="10" width="28" height="12" rx="1" />
+      <path d="M5 14h2M8.5 14h2M12 14h2M15.5 14h2M19 14h2M22.5 14h2M26 14h1M5 18h2M8.5 18h2M12 18h2M15.5 18h2M19 18h2M22.5 18h2M26 18h1" stroke-width="1.6" />
+    </template>
+    <template v-else-if="type === 'modem'">
+      <rect x="4" y="13" width="24" height="10" rx="2" />
+      <path d="M8 13l3-6M24 13l-3-6" />
+      <circle cx="9" cy="18" r=".9" fill="currentColor" />
+      <circle cx="13" cy="18" r=".9" fill="currentColor" />
+      <circle cx="17" cy="18" r=".9" fill="currentColor" />
+    </template>
+    <template v-else-if="type === 'printer'">
+      <path d="M9 12V5h14v7" />
+      <rect x="4" y="12" width="24" height="10" rx="1.5" />
+      <path d="M9 19h14v8H9z" />
+    </template>
+    <template v-else-if="type === 'phone'">
+      <rect x="5" y="9" width="22" height="15" rx="2" />
+      <path d="M8 9c0-4 4-5 8-5s8 1 8 5" />
+      <rect x="15" y="12" width="9" height="5" rx=".5" stroke-width="1.2" />
+      <path d="M8 13h4M8 16h4M8 19h4M16 20h7" stroke-width="1.2" />
+    </template>
+    <template v-else-if="type === 'isp'">
+      <path d="M9 24c-4 0-5-5-1.5-6.3C7 14 11 12 13.5 14 15 10 21 10 22 14.5c3.5-.8 6 2.5 4.3 5C28.5 21 27 24.5 24 24.5z" />
+    </template>
     <template v-else-if="type === 'server'">
       <rect x="7" y="3" width="18" height="8" rx="1" />
       <rect x="7" y="12" width="18" height="8" rx="1" />

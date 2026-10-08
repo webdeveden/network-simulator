@@ -4,6 +4,7 @@ import { useWorkspace } from '../stores/workspace'
 import NetworkCanvas from './canvas/NetworkCanvas.vue'
 import RoomView from './room/RoomView.vue'
 import ConsoleWindow from './terminal/ConsoleWindow.vue'
+import PlacementDialog from './panels/PlacementDialog.vue'
 import { getDevice } from '../engine/network'
 import DeviceConfigPanel from './panels/DeviceConfigPanel.vue'
 import DevicePalette from './panels/DevicePalette.vue'
@@ -99,6 +100,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <slot name="side" />
       </div>
     </div>
+    <PlacementDialog />
   </div>
 </template>
 

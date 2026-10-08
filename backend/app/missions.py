@@ -62,10 +62,10 @@ MISSIONS: list[dict[str, Any]] = [
         ),
         "start": {
             "devices": [
-                {"type": "pc", "name": "PC1", "x": 60, "y": 60},
-                {"type": "pc", "name": "PC2", "x": 520, "y": 60},
-                {"type": "pc", "name": "PC3", "x": 60, "y": 320},
-                {"type": "pc", "name": "PC4", "x": 520, "y": 320},
+                {"type": "pc", "name": "PC1", "x": 60, "y": 60, "room": "accounting"},
+                {"type": "pc", "name": "PC2", "x": 520, "y": 60, "room": "accounting"},
+                {"type": "pc", "name": "PC3", "x": 60, "y": 320, "room": "accounting"},
+                {"type": "pc", "name": "PC4", "x": 520, "y": 320, "room": "accounting"},
             ]
         },
         "palette": ["switch"],
@@ -351,9 +351,9 @@ MISSIONS: list[dict[str, Any]] = [
             "devices": [
                 {"type": "server", "name": "FILES", "x": 60, "y": 60, "ifaces": {"eth0": "192.168.1.10/24"}},
                 {"type": "switch", "name": "SW1", "x": 300, "y": 60},
-                {"type": "ap", "name": "AP1", "x": 300, "y": 260},
-                {"type": "laptop", "name": "LT1", "x": 120, "y": 420, "ifaces": {"wlan0": "192.168.1.21/24"}},
-                {"type": "laptop", "name": "LT2", "x": 480, "y": 420, "ifaces": {"wlan0": "192.168.1.22/24"}},
+                {"type": "ap", "name": "AP1", "x": 300, "y": 260, "room": "sales"},
+                {"type": "laptop", "name": "LT1", "x": 120, "y": 420, "ifaces": {"wlan0": "192.168.1.21/24"}, "room": "sales"},
+                {"type": "laptop", "name": "LT2", "x": 480, "y": 420, "ifaces": {"wlan0": "192.168.1.22/24"}, "room": "sales"},
             ],
             "links": [["SW1", "FILES"], ["SW1", "AP1"]],
         },

@@ -13,18 +13,28 @@ import {
   linkOn,
   emptyTopology,
   getDevice,
+  isOutside,
   removeDevice,
   topologyCost,
 } from '../engine/network'
-import { moveDeviceInRack } from '../room/layout'
+import { emptyRacks, newRackSpot, tidyByRoom } from '../room/groups'
+import { moveDeviceInRack, officesOf, roomLabel, roomLayout, roomsOf, WALL_RACK_BASE } from '../room/layout'
 import { completeLine, ctrlZ, newSession, promptOf, runLine, sessionIsIos, type Session } from '../engine/shell'
-import type { CableChoice, DeviceType, Link, PingResult, Topology } from '../engine/types'
+import type { CableChoice, Device, DeviceType, Link, PingResult, Topology } from '../engine/types'
 
 export const ALL_TYPES = Object.keys(DEVICE_CATALOG) as DeviceType[]
 
 export const STEP_MS = 380
 
 export type View = '2d' | '3d'
+
+function savedShowRooms(): boolean {
+  try {
+    return localStorage.getItem('netsim.rooms2d') !== 'hidden'
+  } catch {
+    return true
+  }
+}
 
 function savedCable(): CableChoice {
   try {
@@ -67,6 +77,8 @@ export const useWorkspace = defineStore('workspace', () => {
   const view = ref<View>(savedView())
   /** Cable type used for the next connection. */
   const cable = ref<CableChoice>(savedCable())
+  /** 2D map: draw a box around the devices of each room. */
+  const showRooms = ref(savedShowRooms())
   const palette = ref<DeviceType[]>(ALL_TYPES)
   const budget = ref<number | null>(null)
   const baselineCost = ref(0)
@@ -124,13 +136,124 @@ export const useWorkspace = defineStore('workspace', () => {
     return false
   }
 
-  function add(type: DeviceType, x: number, y: number, rack?: number) {
+  function add(type: DeviceType, x: number, y: number, where: { rack?: number; room?: string; deskOf?: string } = {}) {
     if (!palette.value.includes(type)) return
     if (!canAfford(DEVICE_CATALOG[type].cost)) return
-    const d = addDevice(topo.value, type, Math.round(x), Math.round(y))
-    if (rack !== undefined) d.rack = rack
+    // The first device in an empty rack lands on the rack's spot on the 2D map.
+    const spot = where.rack !== undefined ? emptyRacks(topo.value).find((e) => e.index === where.rack) : undefined
+    const d = addDevice(topo.value, type, Math.round(spot?.x ?? x), Math.round(spot?.y ?? y))
+    if (where.rack !== undefined) d.rack = where.rack
+    if (where.room !== undefined) d.room = where.room
+    if (where.deskOf !== undefined) d.deskOf = where.deskOf
     selection.value = { kind: 'device', id: d.id }
     return d
+  }
+
+  /** A device waiting for the "where does it go?" dialog. `preset` pre-selects a choice. */
+  /** The "add a rack" dialog (from the device list). */
+  const rackDialog = ref(false)
+  const pendingAdd = ref<{ type: DeviceType; x: number; y: number; preset?: { rack?: number; room?: string } } | null>(null)
+
+  /** Asks where a new device goes (rack or office) before adding it. The ISP is outside: no question. */
+  function requestAdd(type: DeviceType, x: number, y: number, preset?: { rack?: number; room?: string }) {
+    if (!palette.value.includes(type)) return
+    if (isOutside({ type } as Device)) {
+      const d = add(type, x, y)
+      if (d) notify(`${d.name} is outside the building: it shows on the 2D map only`)
+      return
+    }
+    pendingAdd.value = { type, x, y, preset }
+  }
+
+  /** Where the dialog said to put it: an existing rack, a new rack, or an office. */
+  type Placement = { rack: number } | { newFloorRack: true } | { newWallRack: string } | { room: string } | { deskOf: string }
+
+  function confirmAdd(where: Placement) {
+    const p = pendingAdd.value
+    if (!p) return
+    pendingAdd.value = null
+    if ('room' in where) return add(p.type, p.x, p.y, { room: where.room })
+    if ('deskOf' in where) return add(p.type, p.x, p.y, { deskOf: where.deskOf })
+    const rack = 'rack' in where ? where.rack : 'newFloorRack' in where ? addFloorRack() : addWallRack(where.newWallRack)
+    return add(p.type, p.x, p.y, { rack })
+  }
+
+  /** Puts a phone on each of these PC/laptop desks. Cabling is left to the player. */
+  function addPhones(deskIds: string[]) {
+    const p = pendingAdd.value
+    if (!p) return
+    const hosts = deskIds.map((id) => getDevice(topo.value, id)).filter((d): d is Device => !!d)
+    if (!canAfford(DEVICE_CATALOG.phone.cost * hosts.length)) return
+    pendingAdd.value = null
+    for (const host of hosts) addDevice(topo.value, 'phone', Math.round(host.x + 110), Math.round(host.y)).deskOf = host.id
+    const n = hosts.length
+    notify(`${n} phone${n === 1 ? '' : 's'} added: cable each PC to its phone's pc port, and the phone's eth0 to the network`)
+  }
+
+  /**
+   * Deletes an office or balcony (never the server room or the last office). Its
+   * devices move to another office, its wall racks go (their gear moves to the
+   * server room), and its custom name and colour are forgotten.
+   */
+  function deleteRoom(id: string): string | null {
+    const t = topo.value
+    const room = roomsOf(t).find((r) => r.id === id)
+    if (!room) return 'Unknown room'
+    if (room.kind === 'racks') return "The server room holds the floor racks: it can't be deleted"
+    if (room.kind === 'office' && officesOf(t).length <= 1) return 'The building needs at least one office'
+    const label = roomLabel(t, id)
+    if (t.customRooms?.some((r) => r.id === id)) t.customRooms = t.customRooms.filter((r) => r.id !== id)
+    else t.removedRooms = [...(t.removedRooms ?? []), id]
+    for (const w of (t.wallRacks ?? []).filter((w) => w.room === id)) {
+      for (const d of t.devices.filter((d) => d.rack === w.id)) {
+        delete d.rack
+        delete d.slot
+      }
+      if (t.rackPos) delete t.rackPos[w.id]
+    }
+    t.wallRacks = (t.wallRacks ?? []).filter((w) => w.room !== id)
+    for (const d of t.devices.filter((d) => d.room === id)) delete d.room
+    if (t.rooms) delete t.rooms[id]
+    notify(`${label} deleted`)
+    return null
+  }
+
+  /** Ask the 3D view to take the player to a room (it watches this). */
+  const goTo = ref<{ room: string; seq: number } | null>(null)
+  function goToRoom(room: string) {
+    setView('3d')
+    goTo.value = { room, seq: (goTo.value?.seq ?? 0) + 1 }
+  }
+
+  /** The "add a room" dialog (from the device list). */
+  const roomDialog = ref(false)
+
+  /** A new office (east end of the building) or balcony (off the corridor). Returns its id. */
+  function addRoom(label: string, kind: 'office' | 'balcony', color?: string): string {
+    const list = (topo.value.customRooms ??= [])
+    const id = `room-${Date.now().toString(36)}`
+    list.push({ id, label: label.trim().slice(0, 40) || (kind === 'balcony' ? 'Balcony' : 'New office'), kind })
+    if (color) editRoom(id, { color })
+    return id
+  }
+
+  /** One more (empty) floor rack in the server room; returns its index. */
+  function addFloorRack(): number {
+    const floors = roomLayout(topo.value).racks.filter((r) => r.kind === 'floor').length
+    const spot = newRackSpot(topo.value, 'server')
+    topo.value.serverRacks = floors + 1
+    topo.value.rackPos = { ...topo.value.rackPos, [floors]: spot }
+    return floors
+  }
+
+  /** A new wall-mounted mini rack (IDF) in an office; returns its id. */
+  function addWallRack(room: string, name?: string): number {
+    const list = (topo.value.wallRacks ??= [])
+    const id = Math.max(WALL_RACK_BASE - 1, ...list.map((w) => w.id)) + 1
+    const spot = newRackSpot(topo.value, room)
+    list.push({ id, room, name: name?.trim() || `IDF-${String.fromCharCode(65 + (list.length % 26))}` })
+    topo.value.rackPos = { ...topo.value.rackPos, [id]: spot }
+    return id
   }
 
   function setCable(c: CableChoice) {
@@ -185,6 +308,45 @@ export const useWorkspace = defineStore('workspace', () => {
     if (!l) return
     disconnect(topo.value, l.id)
     if (selection.value?.kind === 'link' && selection.value.id === l.id) selection.value = null
+  }
+
+  function setShowRooms(on: boolean) {
+    showRooms.value = on
+    try {
+      localStorage.setItem('netsim.rooms2d', on ? 'shown' : 'hidden')
+    } catch {
+      // Storage blocked: the choice just won't be remembered.
+    }
+  }
+
+  /** Names and colours a room (a blank name restores the default). Saved with the network; 2D and 3D both read it. */
+  function editRoom(id: string, edit: { label?: string; color?: string }) {
+    const t = topo.value
+    const room = { ...(t.rooms?.[id] ?? {}) }
+    if (edit.label !== undefined) {
+      const clean = edit.label.trim().slice(0, 40)
+      if (clean) room.label = clean
+      else delete room.label
+    }
+    if (edit.color !== undefined) room.color = edit.color
+    t.rooms = { ...t.rooms, [id]: room }
+  }
+
+  function renameRoom(id: string, label: string) {
+    editRoom(id, { label })
+  }
+
+  /** Lays the 2D map out in room blocks. */
+  function tidyRooms() {
+    tidyByRoom(topo.value)
+  }
+
+  /** Moves a PC, laptop or AP into another office of the 3D building. */
+  function moveToRoom(deviceId: string, room: string) {
+    const d = getDevice(topo.value, deviceId)
+    if (!d) return
+    d.room = room
+    delete d.deskOf // a phone moved elsewhere gets its own desk
   }
 
   function moveInRack(deviceId: string, rack: number, index: number): string | null {
@@ -317,6 +479,24 @@ export const useWorkspace = defineStore('workspace', () => {
     linkPorts,
     unplug,
     moveInRack,
+    moveToRoom,
+    pendingAdd,
+    addPhones,
+    deleteRoom,
+    goTo,
+    goToRoom,
+    rackDialog,
+    roomDialog,
+    addRoom,
+    requestAdd,
+    confirmAdd,
+    addFloorRack,
+    addWallRack,
+    showRooms,
+    setShowRooms,
+    renameRoom,
+    editRoom,
+    tidyRooms,
     palette,
     budget,
     spent,

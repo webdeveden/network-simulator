@@ -1,5 +1,5 @@
 import { inSubnet, matchesSpec, networkOf } from './ip'
-import { cableProblem, DEVICE_CATALOG, getDevice, isBridge, isHost, linkActive, linkOn, linksOn, peerOf } from './network'
+import { cableProblem, DEVICE_CATALOG, getDevice, isBridge, isHost, linkActive, linkOn, linksOn, patchPartner, peerOf } from './network'
 import type { Device, FwRule, Hop, Iface, PingResult, Proto, Topology } from './types'
 
 const MAX_TTL = 32
@@ -113,6 +113,14 @@ function resolveL2(
   const startPeer = peerOf(first, from.id, egress.name)
   const queue: Node[] = [{ linkId: first.id, dev: startPeer.device, iface: startPeer.iface, path: [] }]
   const seenSwitches = new Set<string>()
+  // A phone sending its own traffic can also reach the PC on its pc port.
+  if (from.type === 'phone') {
+    const pc = linkOn(topo, from.id, 'pc')
+    if (pc && linkActive(topo, pc)) {
+      const peer = peerOf(pc, from.id, 'pc')
+      queue.push({ linkId: pc.id, dev: peer.device, iface: peer.iface, path: [] })
+    }
+  }
 
   while (queue.length) {
     const node = queue.shift()!
@@ -120,6 +128,27 @@ function resolveL2(
     if (!dev) continue
     const path = [...node.path, { deviceId: dev.id, linkId: node.linkId }]
 
+    if (dev.type === 'patch') {
+      // Passive: the frame comes out of the same port number on the other side.
+      const out = linkOn(topo, dev.id, patchPartner(node.iface))
+      if (out && linkActive(topo, out)) {
+        const peer = peerOf(out, dev.id, patchPartner(node.iface))
+        queue.push({ linkId: out.id, dev: peer.device, iface: peer.iface, path })
+      }
+      continue
+    }
+    // IP phone: answers for its own IP, and switches everything else between its two ports.
+    if (dev.type === 'phone' && !dev.ifaces.some((i) => i.ip === targetIp)) {
+      if (seenSwitches.has(dev.id)) continue
+      seenSwitches.add(dev.id)
+      const other = node.iface === 'pc' ? 'eth0' : 'pc'
+      const out = linkOn(topo, dev.id, other)
+      if (out && linkActive(topo, out)) {
+        const peer = peerOf(out, dev.id, other)
+        queue.push({ linkId: out.id, dev: peer.device, iface: peer.iface, path })
+      }
+      continue
+    }
     if (isBridge(dev)) {
       if (seenSwitches.has(dev.id)) continue
       seenSwitches.add(dev.id)
@@ -135,7 +164,8 @@ function resolveL2(
       continue
     }
 
-    const iface = dev.ifaces.find((i) => i.name === node.iface)
+    // A phone reached on either port answers with its eth0 address.
+    const iface = dev.type === 'phone' ? dev.ifaces.find((i) => i.ip === targetIp) : dev.ifaces.find((i) => i.name === node.iface)
     if (iface?.ip === targetIp) {
       // Learn: sender caches the MAC, switches learn the sender's port.
       ;(state.arp[from.id] ??= {})[targetIp] = iface.mac

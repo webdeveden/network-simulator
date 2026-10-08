@@ -42,6 +42,7 @@ export function runLine(topo: Topology, state: SimState, s: Session, input: stri
   const dev = active(topo, s)
   if (!dev) return { lines: [{ text: 'No device selected', kind: 'err' }] }
   const f = s.frames[s.frames.length - 1]
+  if (dev.type === 'patch') return { lines: [{ text: `${dev.name} is a patch panel: passive wiring, no console. Front port N connects straight through to rear port N.`, kind: 'muted' }] }
   if (isIos(dev)) return runIos({ topo, state, s, f, dev, promptLen }, input)
 
   const [cmd, ...rest] = input.trim().split(/\s+/)
