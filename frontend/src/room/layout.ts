@@ -188,6 +188,17 @@ const mountZone = (k: number) =>
 export const ROOM_COLORS: Record<string, string> = { server: '#22d3ee', it: '#39ff88', accounting: '#ffc94d', sales: '#ff6bd6' }
 const EXTRA_COLORS = ['#a5b4fc', '#ff8a4d', '#7dd3fc', '#c084fc', '#facc15', '#f87171']
 const PORT_PITCH = 0.06
+/** Jack sizes on a 48-port switch: small access ports, gigabit copper, slim SFP cages, console. */
+export function switchPortSize(iface: string, kind: PortKind): { w: number; h: number } {
+  if (kind === 'fiber') return { w: 0.02, h: 0.011 }
+  if (kind === 'console') return { w: 0.016, h: 0.011 }
+  return iface.startsWith('fa') ? { w: 0.0092, h: 0.0085 } : { w: 0.012, h: 0.0095 }
+}
+
+/** Height of a switch's two port rows above and below the middle of its panel. */
+const SWITCH_ROW = 0.016
+/** Port spacing that keeps `cols` columns ending at `right` clear of the device name on the left. */
+const fitPitch = (right: number, cols: number, w: number) => (cols < 2 ? PORT_PITCH : Math.min(PORT_PITCH, (right - (-w / 2 + 0.135)) / (cols - 1)))
 
 const PANEL: Record<DeviceType, { w: number; h: number }> = {
   router: { w: 0.44, h: 0.13 },
@@ -276,16 +287,27 @@ export function portSpots(d: Device): PortSpot[] {
   // Right to left: fiber cages, then the copper block; the console port sits bottom-left under the name.
   let right = w / 2 - 0.03
   if (d.type === 'switch') {
-    fiber.forEach((n, k) => spots.push(at(n, right, k % 2 === 0 ? 0.022 : -0.022)))
-    if (fiber.length) right -= 0.075
-    const cols = Math.ceil(copper.length / 2)
-    const x0 = right - (cols - 1) * PORT_PITCH
-    copper.forEach((n, k) => spots.push(at(n, x0 + Math.floor(k / 2) * PORT_PITCH, k % 2 === 0 ? 0.022 : -0.022)))
+    // Like a 48-port access switch: two rows of small jacks (odd on top), then the
+    // copper gigabit ports, then the fiber cages at the right edge.
+    const row = (k: number) => (k % 2 === 0 ? SWITCH_ROW : -SWITCH_ROW)
+    const fx = w / 2 - 0.025
+    fiber.forEach((n, k) => spots.push(at(n, fx, row(k))))
+    const gig = copper.filter((n) => !n.startsWith('fa'))
+    const access = copper.filter((n) => n.startsWith('fa'))
+    const gcols = Math.ceil(gig.length / 2)
+    const gx = fx - (fiber.length ? 0.032 : 0) - (gcols - 1) * 0.017
+    gig.forEach((n, k) => spots.push(at(n, gx + Math.floor(k / 2) * 0.017, row(k))))
+    const cols = Math.ceil(access.length / 2)
+    const left = -w / 2 + 0.095
+    const last = (gig.length ? gx - 0.02 : fx - 0.03) - left
+    const pitch = cols < 2 ? 0 : Math.min(PORT_PITCH, last / (cols - 1))
+    access.forEach((n, k) => spots.push(at(n, left + Math.floor(k / 2) * pitch, row(k))))
   } else {
     fiber.forEach((n, k) => spots.push(at(n, right - k * 0.05, -0.01)))
     if (fiber.length) right -= fiber.length * 0.05 + 0.02
-    const x0 = right - (copper.length - 1) * PORT_PITCH
-    copper.forEach((n, k) => spots.push(at(n, x0 + k * PORT_PITCH, -0.01)))
+    const pitch = fitPitch(right, copper.length, w)
+    const x0 = right - (copper.length - 1) * pitch
+    copper.forEach((n, k) => spots.push(at(n, x0 + k * pitch, -0.01)))
   }
   consoles.forEach((n) => spots.push(at(n, -w / 2 + 0.05, -h / 2 + 0.016)))
   return spots

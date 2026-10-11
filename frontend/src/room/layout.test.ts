@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { addDevice, buildTopology, connectPorts, linkOn } from '../engine/network'
-import { BUILDING, collide, CUBE, freeSpot, isBlocked, moveDeviceInRack, portSpots, RACK, roomAt, roomLayout } from './layout'
+import { addDevice, buildTopology, connectPorts, linkOn, portKind } from '../engine/network'
+import { BUILDING, collide, CUBE, freeSpot, isBlocked, moveDeviceInRack, portSpots, RACK, roomAt, roomLayout, switchPortSize } from './layout'
 
 const topo = () =>
   buildTopology({
@@ -179,8 +179,15 @@ describe('room layout', () => {
       expect(Math.abs(s.x) + 0.02).toBeLessThanOrEqual(p.w / 2)
       expect(Math.abs(s.y) + 0.014).toBeLessThanOrEqual(p.h / 2 + 0.005)
     }
+    // Jacks never overlap (switches pack 48 small ones; other gear keeps roomy spacing).
+    const size = (iface: string) => (type === 'switch' ? switchPortSize(iface, portKind(d, iface)) : { w: 0.035, h: 0.03 })
     spots.forEach((a, i) =>
-      spots.slice(i + 1).forEach((b) => expect(Math.abs(a.x - b.x) >= 0.035 || Math.abs(a.y - b.y) >= 0.03, `${a.iface}/${b.iface}`).toBe(true)),
+      spots.slice(i + 1).forEach((b) => {
+        const sa = size(a.iface)
+        const sb = size(b.iface)
+        const apart = Math.abs(a.x - b.x) >= (sa.w + sb.w) / 2 + 0.001 || Math.abs(a.y - b.y) >= (sa.h + sb.h) / 2 + 0.001
+        expect(apart, `${a.iface}/${b.iface}`).toBe(true)
+      }),
     )
     if (type === 'switch') {
       const network = spots.filter((s) => s.iface !== 'con0')
@@ -197,7 +204,7 @@ describe('connectPorts', () => {
     expect(typeof l).not.toBe('string')
     expect(linkOn(t, sw.id, 'fa0/5')).toBeDefined()
     expect(connectPorts(t, pc2.id, 'eth0', sw.id, 'fa0/5')).toMatch(/already has a cable/)
-    expect(connectPorts(t, pc2.id, 'eth0', sw.id, 'fa0/9')).toMatch(/Unknown port/)
+    expect(connectPorts(t, pc2.id, 'eth0', sw.id, 'fa0/49')).toMatch(/Unknown port/)
   })
 })
 

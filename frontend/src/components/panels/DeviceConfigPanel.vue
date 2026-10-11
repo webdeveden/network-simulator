@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { deskRoomsFor, onDesk, roomLabel, roomOf } from '../../room/layout'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { parseRule } from '../../engine/commands'
 import { formatRule } from '../../engine/forwarding'
 import { isValidIp, parseCidr } from '../../engine/ip'
-import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isConsolePort, isHost, isPhonePcPort, linkActive, linkOn, peerOf, portKind, setIfaceIp } from '../../engine/network'
+import { dhcpRequest } from '../../engine/dhcp'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isConsolePort, isHost, isPhonePcPort, isSvi, linkActive, linkOn, peerOf, portKind, setIfaceIp, type PortKind } from '../../engine/network'
 import { useWorkspace } from '../../stores/workspace'
 import DeviceIcon from '../canvas/DeviceIcon.vue'
 import RackPanel from './RackPanel.vue'
@@ -51,6 +52,25 @@ function applyIp(iface: string) {
   const e = setIfaceIp(d, iface, value || 'none')
   if (e) ws.notify(e, 'err')
   else ws.notify(value ? `${d.name} ${iface} = ${value}` : `${d.name} ${iface} cleared`)
+}
+
+const PORT_COLORS: Record<PortKind, string> = { copper: '#22d3ee', fiber: CABLES.fiber.color, console: CABLES.console.color, radio: '#8892a6', virtual: '#4b5568' }
+const PORT_LABELS: Record<PortKind, string> = { copper: 'copper RJ45', fiber: 'fiber SFP', console: 'console', radio: 'radio', virtual: 'virtual' }
+/** The port kinds this device has, for the legend. */
+const legendKinds = computed(() => {
+  const d = ws.selectedDevice
+  if (!d) return []
+  const kinds = new Set(d.ifaces.map((i) => portKind(d, i.name)))
+  return (['copper', 'fiber', 'console', 'radio', 'virtual'] as PortKind[]).filter((k) => kinds.has(k))
+})
+
+/** Runs the DHCP exchange for one interface; the panel's fields refresh from the result. */
+function getDhcp(iface: string) {
+  const d = ws.selectedDevice!
+  const r = dhcpRequest(ws.topo, ws.sim, d, iface)
+  const last = [...r.lines].reverse().find((l) => l.kind === 'ok' || l.kind === 'err')?.text ?? ''
+  const why = r.ok ? '' : r.lines.find((l) => l.text.includes('↳'))?.text.replace('↳', '').trim()
+  ws.notify(`${d.name} ${iface}: ${last}${why ? ` — ${why}` : ''}`, r.ok ? 'ok' : 'err')
 }
 
 function applyGateway() {
@@ -141,22 +161,45 @@ function doPing() {
       </template>
 
       <h3 class="section">interfaces</h3>
+      <div class="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-dim">
+        <span v-for="k in legendKinds" :key="k"><span class="mr-1 inline-block h-2 w-2 align-middle" :class="k === 'fiber' ? 'rounded-full' : ''" :style="{ background: PORT_COLORS[k] }" />{{ PORT_LABELS[k] }}</span>
+      </div>
       <div v-for="i in ws.selectedDevice.ifaces" :key="i.name" class="mb-2">
         <div class="flex justify-between text-[10px]">
           <span class="text-cyan">
-            {{ i.name }}
-            <span v-if="portKind(ws.selectedDevice, i.name) !== 'copper'" class="text-dim">· {{ portKind(ws.selectedDevice, i.name) }}</span>
+            <span
+              class="mr-1 inline-block h-2 w-2 align-middle"
+              :class="portKind(ws.selectedDevice, i.name) === 'fiber' ? 'rounded-full' : ''"
+              :style="{ background: PORT_COLORS[portKind(ws.selectedDevice, i.name)] }"
+            />{{ i.name }}
+            <span v-if="portKind(ws.selectedDevice, i.name) !== 'copper'" :style="{ color: PORT_COLORS[portKind(ws.selectedDevice, i.name)] }">
+              · {{ PORT_LABELS[portKind(ws.selectedDevice, i.name)] }}
+            </span>
           </span>
           <span class="text-dim">{{ peerLabel(i.name) }}</span>
         </div>
-        <input
-          v-if="DEVICE_CATALOG[ws.selectedDevice.type].layer === 3 && !isConsolePort(i.name) && !isPhonePcPort(ws.selectedDevice, i.name)"
-          v-model="drafts[i.name]"
-          class="input mt-0.5"
-          placeholder="ip/prefix e.g. 192.168.1.10/24"
-          @keydown.enter="applyIp(i.name)"
-          @blur="applyIp(i.name)"
-        />
+        <div
+          v-if="(DEVICE_CATALOG[ws.selectedDevice.type].layer === 3 || isSvi(i.name)) && !isConsolePort(i.name) && !isPhonePcPort(ws.selectedDevice, i.name)"
+          class="mt-0.5 flex gap-1"
+        >
+          <input
+            v-model="drafts[i.name]"
+            class="input min-w-0 flex-1"
+            placeholder="ip/prefix e.g. 192.168.1.10/24"
+            @keydown.enter="applyIp(i.name)"
+            @blur="applyIp(i.name)"
+          />
+          <button
+            v-if="isHost(ws.selectedDevice)"
+            class="btn shrink-0 px-2 text-[10px]"
+            :class="i.dhcp ? 'btn-primary' : ''"
+            title="Ask a DHCP server for an address, mask and gateway"
+            @click="getDhcp(i.name)"
+          >
+            DHCP
+          </button>
+        </div>
+        <div v-if="i.dhcp" class="mt-0.5 text-[10px] text-neon">via DHCP{{ i.ip ? '' : ' (no lease yet)' }}</div>
       </div>
 
       <p v-if="ws.selectedDevice.type === 'ap'" class="mt-1 text-[10px] text-dim">

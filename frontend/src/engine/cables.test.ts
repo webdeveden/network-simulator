@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { emptySimState, ping } from './forwarding'
-import { buildTopology, connect, connectPorts, linkActive, topologyCost } from './network'
+import { buildTopology, cableProblem, connect, connectPorts, linkActive, topologyCost } from './network'
 import { newSession, promptOf, runLine } from './shell'
 import type { CableChoice, Link, Topology } from './types'
 
@@ -84,5 +84,47 @@ describe('cable types', () => {
     const t = buildTopology({ devices: [{ type: 'pc', name: 'PC', x: 0, y: 0 }] })
     const out = runLine(t, emptySimState(), newSession(t.devices[0].id), 'ip set 192.168.0.5/24').lines[0].text
     expect(out).toMatch(/eth0 configured/)
+  })
+})
+
+describe('patch panel runs', () => {
+  function run() {
+    const t = buildTopology(
+      {
+        devices: [
+          { type: 'pc', name: 'PC1', x: 0, y: 0, ifaces: { eth0: '192.168.1.10/24' }, gateway: '192.168.1.1' },
+          { type: 'patch', name: 'PP1', x: 0, y: 0 },
+          { type: 'switch', name: 'SW1', x: 0, y: 0 },
+          { type: 'router', name: 'R1', x: 0, y: 0, ifaces: { 'g0/0': '192.168.1.1/24' } },
+        ],
+      },
+      false,
+    )
+    const id = (n: string) => t.devices.find((d) => d.name === n)!.id
+    connectPorts(t, id('R1'), 'g0/0', id('SW1'), 'fa0/8')
+    return { t, id }
+  }
+
+  it('the office run lands on the rear, the patch cord on the front, both straight-through, and traffic passes', () => {
+    const { t, id } = run()
+    const office = connect(t, id('PC1'), id('PP1'))
+    const cord = connect(t, id('PP1'), id('SW1'))
+    expect(office).toMatchObject({ cable: 'straight', b: { iface: 'p1r' } })
+    expect(cord).toMatchObject({ cable: 'straight', a: { iface: 'p1' } })
+    expect(ping(t, emptySimState(), id('PC1'), '192.168.1.1').success).toBe(true)
+  })
+
+  it('judges the whole run: one crossover segment PC→switch takes the link down', () => {
+    const { t, id } = run()
+    connectPorts(t, id('PC1'), 'eth0', id('PP1'), 'p5r', 'crossover')
+    const cord = connectPorts(t, id('PP1'), 'p5', id('SW1'), 'fa0/1', 'straight') as Link
+    expect(cableProblem(t, cord)).toMatch(/PC1↔SW1 through PP1 is crossed end to end/)
+    expect(ping(t, emptySimState(), id('PC1'), '192.168.1.1').success).toBe(false)
+  })
+
+  it('a run that stops at an empty panel port is not judged yet', () => {
+    const { t, id } = run()
+    const l = connectPorts(t, id('PC1'), 'eth0', id('PP1'), 'p7r', 'crossover') as Link
+    expect(cableProblem(t, l)).toBeNull()
   })
 })

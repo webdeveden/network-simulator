@@ -8,6 +8,32 @@ export interface Iface {
   /** Administratively down (IOS `shutdown`). */
   shutdown?: boolean
   description?: string
+  /** Address learned from a DHCP server (`ip address dhcp` on IOS, `dhcp` on a PC). */
+  dhcp?: boolean
+  /** Default router handed out with a DHCP lease (IOS installs it as a default route). */
+  dhcpGateway?: string
+  /** Subinterface (`g0/0.10`) or SVI (`vlan10`): the 802.1Q VLAN it lives in. */
+  vlan?: number
+  /** Subinterface: `encapsulation dot1Q N native` (sent untagged). */
+  nativeVlan?: boolean
+  /** Switch port settings. Missing = access port in VLAN 1. */
+  switchport?: Switchport
+  /** `ip helper-address`: relay DHCP broadcasts to this server. */
+  helper?: string
+  /** `ip nat inside` / `ip nat outside`. */
+  nat?: 'inside' | 'outside'
+  /** `ip ospf cost N`. */
+  ospfCost?: number
+}
+
+export interface Switchport {
+  mode: 'access' | 'trunk'
+  /** Access VLAN (default 1). */
+  vlan?: number
+  /** Trunk: VLANs allowed (missing = all). */
+  allowed?: number[]
+  /** Trunk: native (untagged) VLAN, default 1. */
+  native?: number
 }
 
 export interface Route {
@@ -81,6 +107,96 @@ export interface IosConfig {
   startup?: string
   /** Access point wireless settings. */
   wlan?: WlanConfig
+  /** Switch VLAN database: id -> name. VLAN 1 always exists. */
+  vlans?: Record<number, string>
+  ospf?: OspfConfig
+  eigrp?: EigrpConfig
+  rip?: RipConfig
+  bgp?: BgpConfig
+  dhcp?: DhcpServer
+  /** Numbered standard access lists (used by NAT). */
+  acls?: Record<number, AclEntry[]>
+  nat?: NatConfig
+}
+
+export interface NetworkStatement {
+  network: string
+  /** Wildcard mask, e.g. 0.0.0.255. Missing = classful (RIP, EIGRP without a wildcard). */
+  wildcard?: string
+  /** OSPF area. */
+  area?: number
+}
+
+export interface OspfConfig {
+  pid: number
+  routerId?: string
+  networks: NetworkStatement[]
+  passive?: string[]
+  /** `default-information originate`: advertise this router's default route. */
+  defaultOriginate?: boolean
+}
+
+export interface EigrpConfig {
+  as: number
+  routerId?: string
+  networks: NetworkStatement[]
+  passive?: string[]
+}
+
+export interface RipConfig {
+  version?: 1 | 2
+  networks: string[]
+  passive?: string[]
+  noAutoSummary?: boolean
+  defaultOriginate?: boolean
+}
+
+export interface BgpNeighbor {
+  ip: string
+  remoteAs: number
+}
+
+export interface BgpConfig {
+  as: number
+  routerId?: string
+  neighbors: BgpNeighbor[]
+  networks: { network: string; prefix: number }[]
+}
+
+export interface DhcpPool {
+  network?: string
+  prefix?: number
+  router?: string
+  dns?: string
+  domain?: string
+}
+
+export interface DhcpLease {
+  ip: string
+  mac: string
+  /** Client device name. */
+  host: string
+  pool: string
+}
+
+export interface DhcpServer {
+  pools: Record<string, DhcpPool>
+  excluded: { from: string; to: string }[]
+  leases: DhcpLease[]
+}
+
+export interface AclEntry {
+  action: 'permit' | 'deny'
+  /** 'any' or an address. */
+  src: string
+  wildcard?: string
+}
+
+export interface NatConfig {
+  /** `ip nat inside source list N interface X overload` */
+  overload?: { acl: number; iface: string }
+  /** `ip nat inside source static <local> <global>` */
+  statics: { local: string; global: string }[]
 }
 
 export interface SsidConfig {

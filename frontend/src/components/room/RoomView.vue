@@ -5,6 +5,7 @@ import { cableProblem, CABLES, getDevice, linkOn, peerOf, portKind } from '../..
 import type { Device, DeviceType } from '../../engine/types'
 import { onDesk, roomColor, roomLabel, roomLayout, roomOf, roomsOf, type RoomId } from '../../room/layout'
 import { RoomScene, type RackDrag, type Target } from '../../room/RoomScene'
+import { GIZMO_BOX } from '../../room/gizmo'
 import { STEP_MS, useWorkspace } from '../../stores/workspace'
 
 const ws = useWorkspace()
@@ -14,6 +15,10 @@ const hover = ref<Target | null>(null)
 const carry = ref<{ deviceId: string; iface: string } | null>(null)
 const drag = ref<RackDrag | null>(null)
 const whereAmI = ref('')
+/** Camera position under the axis gizmo (x east, y up, z south), refreshed a few times a second. */
+const pos = ref<{ x: number; y: number; z: number } | null>(null)
+let posTimer = 0
+const fmt = (v: number) => (v >= 0 ? ' ' : '') + v.toFixed(1)
 const goMenu = ref(false)
 const rooms = computed(() => roomsOf(ws.topo).map((r) => ({ id: r.id, label: roomLabel(ws.topo, r.id), color: roomColor(ws.topo, r.id) })))
 function go(id: string) {
@@ -251,9 +256,14 @@ onMounted(() => {
   scene.setSelection(ws.selection)
   if (new URLSearchParams(location.search).has('debug')) Object.assign(window, { room: scene, ws })
   setTimeout(handleGoTo, 50)
+  posTimer = window.setInterval(() => {
+    const p = scene?.viewPosition()
+    if (p) pos.value = p
+  }, 150)
 })
 
 onBeforeUnmount(() => {
+  clearInterval(posTimer)
   scene?.dispose()
   scene = null
 })
@@ -298,6 +308,18 @@ watch(
       class="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 border border-neon bg-panel/90 px-3 py-1.5 text-xs text-neon"
     >
       Holding {{ aCable }} from {{ port(carry.deviceId, carry.iface) }} · click a free port to plug it in · Q / right-click to drop
+    </div>
+
+    <!-- position under the X/Y/Z gizmo (drawn by the scene in the top-right corner) -->
+    <div
+      v-if="pos"
+      class="pointer-events-none absolute right-[10px] z-20 w-[96px] border border-line bg-panel/90 px-1.5 py-1 font-mono text-[10px] leading-tight"
+      :style="{ top: `${GIZMO_BOX.top + GIZMO_BOX.size + 4}px` }"
+      title="Camera position in metres"
+    >
+      <div><span class="text-[#ff4d5e]">x</span> <span class="text-text whitespace-pre">{{ fmt(pos.x) }}</span></div>
+      <div><span class="text-[#39ff88]">y</span> <span class="text-text whitespace-pre">{{ fmt(pos.y) }}</span></div>
+      <div><span class="text-[#4d9bff]">z</span> <span class="text-text whitespace-pre">{{ fmt(pos.z) }}</span></div>
     </div>
 
     <!-- where you are -->

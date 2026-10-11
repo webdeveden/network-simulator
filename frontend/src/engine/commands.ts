@@ -1,6 +1,7 @@
 import { formatRule, routingTable, sendPacket, type SimState } from './forwarding'
-import { isValidIp, parseCidr, prefixToMask } from './ip'
+import { inSubnet, isValidIp, parseCidr, prefixToMask } from './ip'
 import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, isPhonePcPort, isWifiClient, isRouterLike, linkActive, linkOn, netIfaces, setIfaceIp, wifiProblem } from './network'
+import { dhcpRelease, dhcpRequest } from './dhcp'
 import type { Device, FwRule, PingResult, Proto, Topology } from './types'
 
 export type LineKind = 'out' | 'ok' | 'err' | 'info' | 'muted'
@@ -27,6 +28,8 @@ export const HELP: [string, string][] = [
   ['ip set [iface] <ip/prefix>', 'assign an address (iface optional on single-NIC hosts)'],
   ['ip set <iface> none', 'remove an address'],
   ['gateway <ip|none>', 'set the default gateway (PC / server)'],
+  ['dhcp [iface]', 'get an address, mask and gateway from a DHCP server (ipconfig /renew)'],
+  ['dhcp release [iface]', 'give the DHCP address back (ipconfig /release)'],
   ['hostname <name>', 'rename this device'],
   ['ping <ip|device>', 'send ICMP echo and wait for the reply'],
   ['traceroute <ip|device>', 'list the routers a packet crosses'],
@@ -69,7 +72,15 @@ export function execute(
   const err = (t: string): CommandResult => ({ lines: [out(t, 'err')] })
   const L2 = DEVICE_CATALOG[dev.type].layer === 2
 
+  // Windows / Linux spellings of the DHCP client.
+  const lower = input.trim().toLowerCase()
+  if (lower === 'ipconfig /renew' || lower === 'dhclient') return dhcpClient(topo, state, dev, [])
+  if (lower === 'ipconfig /release' || lower === 'dhclient -r') return dhcpClient(topo, state, dev, ['release'])
+
   switch (cmd.toLowerCase()) {
+    case 'dhcp':
+      return dhcpClient(topo, state, dev, rest)
+
     case 'help':
     case '?':
       return {
@@ -108,7 +119,7 @@ export function execute(
         } else if (i.name === 'wlan0') lines.push(out(`${i.name}: not connected (wifi scan, wifi connect <ssid>)`, 'muted'))
         else lines.push(out(`${i.name}: ${i.shutdown ? 'ADMIN DOWN' : status}${peerDev ? `  -> ${peerDev.name} ${peer!.iface}  (${CABLES[l!.cable ?? 'straight'].label.toLowerCase()})` : ''}`, l ? 'ok' : 'muted'))
         lines.push(out(`    ether ${i.mac}`, 'muted'))
-        if (i.ip) lines.push(out(`    inet ${i.ip}/${i.prefix}  netmask ${prefixToMask(i.prefix!)}`))
+        if (i.ip) lines.push(out(`    inet ${i.ip}/${i.prefix}  netmask ${prefixToMask(i.prefix!)}${i.dhcp ? '  (DHCP)' : ''}`))
       }
       if (isHost(dev)) lines.push(out(`default gateway: ${dev.gateway ?? '(none)'}`, 'info'))
       return { lines }
@@ -206,7 +217,7 @@ export function execute(
 
     case 'show': {
       const what = rest.join(' ')
-      if (what === 'ip route' || what === 'route') return showRoutes(dev)
+      if (what === 'ip route' || what === 'route') return showRoutes(topo, dev)
       if (what === 'mac' || what === 'mac-address-table') {
         if (!L2) return err('show mac is only available on switches')
         const entries = Object.entries(state.mac[dev.id] ?? {})
@@ -220,7 +231,7 @@ export function execute(
     }
 
     case 'route': {
-      if (rest[0] === undefined || rest[0] === 'print') return showRoutes(dev)
+      if (rest[0] === undefined || rest[0] === 'print') return showRoutes(topo, dev)
       if (!isRouterLike(dev)) return err('Only routers and firewalls have static routes. Hosts use: gateway <ip>')
       if (rest[0] === 'add') {
         const [netArg, via, gw] = rest.slice(1)
@@ -228,7 +239,7 @@ export function execute(
         const net = netArg === 'default' ? { ip: '0.0.0.0', prefix: 0 } : parseCidr(netArg ?? '', -1)
         if (!net || net.prefix < 0) return err('Network must be in CIDR form, e.g. 10.0.2.0/24')
         dev.routes.push({ network: net.ip, prefix: net.prefix, via: gw })
-        const reachable = routingTable(dev).some((r) => r.kind === 'static' && r.nextHop === gw)
+        const reachable = dev.ifaces.some((i) => i.ip && !i.shutdown && inSubnet(gw, i.ip, i.prefix!))
         return {
           lines: [
             out(`route ${net.ip}/${net.prefix} via ${gw} added`, 'ok'),
@@ -354,14 +365,29 @@ function wifi(topo: Topology, dev: Device, rest: string[]): CommandResult {
   }
 }
 
-function showRoutes(dev: Device): CommandResult {
+/** The NIC a host uses for DHCP: the one named, else its only network interface. */
+function dhcpClient(topo: Topology, state: SimState, dev: Device, rest: string[]): CommandResult {
+  if (!isHost(dev)) return { lines: [out('Routers ask for an address on an interface: interface g0/1 → ip address dhcp', 'err')] }
+  const release = rest[0] === 'release'
+  const named = release ? rest[1] : rest[0]
+  const nics = netIfaces(dev).filter((i) => !isPhonePcPort(dev, i.name))
+  const iface = named ? nics.find((i) => i.name === named) : nics[0]
+  if (!iface) return { lines: [out(`No interface ${named ?? ''} on ${dev.name}`, 'err')] }
+  if (release) return { lines: dhcpRelease(topo, dev, iface.name), mutated: true }
+  const r = dhcpRequest(topo, state, dev, iface.name)
+  return { lines: r.lines, mutated: r.ok }
+}
+
+const KIND_LETTER: Record<string, string> = { connected: 'C', static: 'S', dhcp: 'S', ospf: 'O', 'ospf-ia': 'O', 'ospf-e2': 'O', eigrp: 'D', rip: 'R', ebgp: 'B', ibgp: 'B' }
+
+function showRoutes(topo: Topology, dev: Device): CommandResult {
   if (DEVICE_CATALOG[dev.type].layer === 2) return { lines: [out('Switches do not route', 'err')] }
-  const rows = routingTable(dev)
+  const rows = routingTable(topo, dev)
   const lines: Line[] = [out('Type  Network             Next hop         Iface', 'info')]
   for (const r of rows) {
     lines.push(
       out(
-        `${r.kind === 'connected' ? 'C' : 'S'}     ${(r.network + '/' + r.prefix).padEnd(20)}${(r.kind === 'connected' ? 'connected' : r.nextHop).padEnd(17)}${r.iface.name}`,
+        `${KIND_LETTER[r.kind] ?? 'S'}     ${(r.network + '/' + r.prefix).padEnd(20)}${(r.kind === 'connected' ? 'connected' : r.nextHop).padEnd(17)}${r.iface.name}`,
       ),
     )
   }

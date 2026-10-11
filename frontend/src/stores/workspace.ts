@@ -15,7 +15,9 @@ import {
   getDevice,
   isOutside,
   removeDevice,
+  isWifiClient,
   topologyCost,
+  upgradeTopology,
 } from '../engine/network'
 import { emptyRacks, newRackSpot, roomGroups, spotFor, tidyByRoom } from '../room/groups'
 import { deleteRack as deleteRackFrom, moveDeviceInRack, officesOf, roomLabel, roomLayout, roomOf, roomsOf, WALL_RACK_BASE } from '../room/layout'
@@ -114,6 +116,8 @@ export const useWorkspace = defineStore('workspace', () => {
   )
 
   function load(t: Topology, opts: { palette?: DeviceType[]; budget?: number | null } = {}) {
+    // Networks saved by older versions get the ports added to each model since (e.g. fiber uplinks).
+    upgradeTopology(t)
     populateBalconies(t)
     topo.value = t
     sim.value = markRaw(emptySimState())
@@ -385,6 +389,28 @@ export const useWorkspace = defineStore('workspace', () => {
     else notify(cable.value === 'auto' ? `Auto: ${name} cable` : `${CABLES[l.cable!].label} cable connected`)
   }
 
+  /** A cable dragged between two devices on the 2D map, waiting for the player to pick the ports. */
+  const pendingLink = ref<{ a: string; b: string } | null>(null)
+  function requestLink(a: string, b: string) {
+    if (a === b) return
+    const da = getDevice(topo.value, a)
+    const db = getDevice(topo.value, b)
+    if (!da || !db) return
+    for (const d of [da, db])
+      if (isWifiClient(d)) return notify(`${d.name} is wireless: it joins over Wi-Fi (wifi connect <ssid> <password>), not by cable`, 'err')
+    pendingLink.value = { a, b }
+  }
+  /** Plugs the cable into the ports picked in the dialog; false (dialog stays open) if it can't go there. */
+  function confirmLink(aIface: string, bIface: string): boolean {
+    const p = pendingLink.value
+    if (!p) return false
+    if (!linkPorts(p.a, aIface, p.b, bIface)) return false
+    const l = linkOn(topo.value, p.a, aIface)
+    if (l) selection.value = { kind: 'link', id: l.id }
+    pendingLink.value = null
+    return true
+  }
+
   function link(a: string, b: string) {
     if (!canAfford(cableCost())) return
     const r = connect(topo.value, a, b, cable.value)
@@ -582,6 +608,9 @@ export const useWorkspace = defineStore('workspace', () => {
   return {
     topo,
     sim,
+    pendingLink,
+    requestLink,
+    confirmLink,
     selection,
     view,
     setView,

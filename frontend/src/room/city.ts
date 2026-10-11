@@ -71,7 +71,13 @@ export function buildCity({ building: b, height, entrance, southOpenings = [], e
   const box = (w: number, h: number, d: number, x: number, y: number, z: number, mat: THREE.Material) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)
     m.position.set(x, y, z)
-    return add(m)
+    return add(m) as THREE.Mesh
+  }
+  /** Tiles a shared texture on one mesh (instead of a texture clone per mesh, so meshes can be merged). */
+  const tile = (m: THREE.Mesh, sx: number, sy: number) => {
+    const uv = m.geometry.attributes.uv
+    for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * sx, uv.getY(i) * sy)
+    uv.needsUpdate = true
   }
   const cx = (b.minX + b.maxX) / 2
   const cz = (b.minZ + b.maxZ) / 2
@@ -95,12 +101,9 @@ export function buildCity({ building: b, height, entrance, southOpenings = [], e
 
   // Facade: window cladding on the outside of the outer walls, and a parapet trim on top.
   const facadeTex = windowsTexture(7, false)
+  const facadeMat = new THREE.MeshStandardMaterial({ map: facadeTex, emissive: 0xffffff, emissiveMap: facadeTex, emissiveIntensity: 0.35, roughness: 0.6 })
   const facade = (len: number, x: number, z: number, alongX: boolean) => {
-    const tex = facadeTex.clone()
-    tex.repeat.set(len / 4, 1)
-    tex.needsUpdate = true
-    const mat = new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.35, roughness: 0.6 })
-    box(alongX ? len : 0.06, height, alongX ? 0.06 : len, x, height / 2, z, mat)
+    tile(box(alongX ? len : 0.06, height, alongX ? 0.06 : len, x, height / 2, z, facadeMat), len / 4, 1)
   }
   facade(W + 0.12, cx, b.minZ - 0.06, true)
   // South facade, with gaps for balcony doors.
@@ -192,7 +195,9 @@ export function buildCity({ building: b, height, entrance, southOpenings = [], e
   }
 
   // The city: blocks of lit towers beyond the roads.
-  const towerTexs = [windowsTexture(11, true), windowsTexture(23, false), windowsTexture(37, true)]
+  const towerMats = [windowsTexture(11, true), windowsTexture(23, false), windowsTexture(37, true)].map(
+    (tex) => new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.5, roughness: 0.7 }),
+  )
   const block = 26
   for (let gx = -6; gx <= 6; gx++)
     for (let gz = -6; gz <= 6; gz++) {
@@ -206,11 +211,8 @@ export function buildCity({ building: b, height, entrance, southOpenings = [], e
         const w = 6 + r() * 8
         const d = 6 + r() * 8
         const h = 8 + Math.pow(r(), 2) * 55
-        const tex = towerTexs[Math.floor(r() * towerTexs.length)].clone()
-        tex.repeat.set(Math.max(1, Math.round(w / 4)), Math.max(1, Math.round(h / 4)))
-        tex.needsUpdate = true
-        const mat = new THREE.MeshStandardMaterial({ map: tex, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.5, roughness: 0.7 })
-        box(w, h, d, bx + (r() - 0.5) * (block - w - 4), h / 2, bz + (r() - 0.5) * (block - d - 4), mat)
+        const mat = towerMats[Math.floor(r() * towerMats.length)]
+        tile(box(w, h, d, bx + (r() - 0.5) * (block - w - 4), h / 2, bz + (r() - 0.5) * (block - d - 4), mat), Math.max(1, Math.round(w / 4)), Math.max(1, Math.round(h / 4)))
       }
     }
   return city

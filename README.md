@@ -25,6 +25,23 @@ Routers, switches and firewalls use IOS modes: `R1>` → `enable` → `R1#` → 
 
 Supported: `ip address`, `shutdown`, `description`, `ip route`, `hostname`, `enable secret`, `username`, `service password-encryption`, `banner motd`, `ip domain-name`, `crypto key generate rsa`, `ip ssh version 2`, `login local`, `transport input`, `write memory`, and `show` for `running-config`, `startup-config`, `ip interface brief`, `ip route`, `interfaces`, `arp`, `mac address-table`, `cdp neighbors`, `ip ssh` and `version`. On firewalls the `fw ...` rule commands still work.
 
+### VLANs, routing protocols, DHCP and NAT
+
+- **VLANs and trunks (switches):** `vlan 10` + `name SALES`, `switchport mode access|trunk`, `switchport access vlan 10` (creates the VLAN if it's missing, like IOS), `switchport trunk allowed vlan 10,20` (`add`/`remove`/`all`/`none`), `switchport trunk native vlan`, `interface range fa0/1 - 4`. Frames really carry 802.1Q tags. Access ports only reach their own VLAN, trunks carry the VLANs they allow (native VLAN untagged), and a switch in the middle drops VLANs it doesn't have. `show vlan brief` and `show interfaces trunk` list ports and warn about mismatched ends.
+- **Switch management address:** `interface vlan 1` → `ip address …`, plus `ip default-gateway`. The switch can then be pinged and SSH'd to, and shows up with its IP in the admin PC's Notes tab.
+- **Router on a stick:** `interface g0/0.10` → `encapsulation dot1Q 10` → `ip address …` routes between VLANs over one trunk. `interface loopback 0` gives a router a loopback.
+- **OSPF, EIGRP, RIP:** `router ospf 1` / `router eigrp 100` / `router rip`, then `network` (OSPF: wildcard + `area`), `passive-interface`, `router-id`, `default-information originate`, `version 2`, `ip ospf cost`.
+  - **Neighbors:** they only form over a working layer 2 path between interfaces in the same subnet with matching area/AS. `show ip ospf neighbor` and `show ip eigrp neighbors` explain why one doesn't (area mismatch, AS mismatch, passive, no network statement, duplicate router ID).
+  - **Route choice:** per prefix, the lowest administrative distance wins (connected 0, static 1, eBGP 20, EIGRP 90, OSPF 110, RIP 120, iBGP 200). Packets follow longest-prefix match.
+  - **Other show commands:** `show ip route` uses the IOS codes (C, L, S, O, O IA, O E2, D, R, B), and `show ip protocols` summarises every process.
+- **BGP:** `router bgp 65001`, `neighbor <ip> remote-as <AS>`, `network <prefix> mask <mask>` (only advertised if that exact route exists). eBGP/iBGP with AS-path loop prevention. Peers must share a subnet. `show ip bgp summary`, `show ip bgp`.
+- **DHCP:**
+  - **Server:** `ip dhcp pool NAME` → `network`, `default-router`, `dns-server`, plus `ip dhcp excluded-address`.
+  - **Relay:** `ip helper-address` on the client's gateway.
+  - **Clients:** `dhcp` / `ipconfig /renew` on PCs, laptops, phones and printers, or the **DHCP** button next to each interface in the side panel. A router interface can be a client too (`ip address dhcp`) and installs the default route it is given.
+  - **Checking:** `show ip dhcp binding`, `show ip dhcp pool`. A failed request explains what's missing: no router in that VLAN, no pool for the subnet, or a relay that can't reach the server.
+- **NAT:** `ip nat inside` / `ip nat outside` on interfaces, `access-list 1 permit 192.168.1.0 0.0.0.255` and `ip nat inside source list 1 interface g0/1 overload` (PAT), or `ip nat inside source static <inside> <public>`. Ping and traceroute show each translation, and replies are translated back. `show ip nat translations`, `show access-lists`.
+
 ### Cables
 
 Pick a cable in the device list before connecting:
@@ -38,6 +55,17 @@ Pick a cable in the device list before connecting:
 | Auto (default) | picks straight or crossover and says which | |
 
 The rules live in `src/engine/network.ts` (`cableFor`, `cableProblem`); `cables.test.ts` covers them.
+
+
+**Choosing ports.** On the 2D map, dragging a cable from one device to another opens a port picker. It shows every port on both ends, colour-coded by type (copper RJ45, fiber SFP as round orange chips, console). Ports in use are crossed out, with what they're plugged into. It starts with the ports auto-connect would choose. You can change the cable type there, and it warns before you plug in if the ports need the other copper cable or a fiber cable.
+
+**Telling fiber from copper.**
+- **3D:** fiber (SFP) ports are slim silver cages with an orange frame, and an orange dust cap while unplugged.
+- **Side panel:** ports are colour-coded, with a legend.
+- **IOS console:** `show interfaces status` lists each port's type (`10/100BaseTX`, `10/100/1000BaseTX`, `1000BaseSX SFP (fiber)`), and `show interfaces <port>` says `Hardware is … SFP (fiber)` / `media type is 1000BaseSX`.
+- **Which ports are fiber:** switches g0/1–g0/2, routers g0/4, firewalls g0/3, the ONT's `pon` and the ISP's `pon0`.
+- **Switch and router ports:** switches are 48-port access switches: `fa0/1–fa0/48` in two rows of 24 (odd on top), copper gigabit `g0/3–g0/6`, fiber `g0/1–g0/2`. Routers have copper `g0/0–g0/3` and `g0/5`, plus fiber `g0/4`.
+- **Older networks:** networks saved before a port existed get it added when they load. Their existing ports, addresses and cables are kept.
 
 ### Wi-Fi
 
@@ -80,6 +108,8 @@ The **▦ Rooms** toggle draws a labelled box around the devices in each room of
 Every console window has a **Learn** tab with lessons for that device type: IP addressing and gateways for PCs, Wi-Fi for laptops, MAC learning for switches, routing and static routes for routers, rules for firewalls, and SSIDs and WPA2 for access points. A "this device" card applies them to the device's actual settings (its subnet, whether its gateway is reachable, and so on). Clicking an example command types it into the console. Lessons live in `src/learn/lessons.ts`; `lessons.test.ts` runs every example command on a fresh device of that type, so a lesson can't teach a command the console rejects.
 
 ### 3D building
+
+**Axis gizmo.** Like Unity's scene gizmo, the top-right corner of the 3D view shows the X (red), Y (green) and Z (blue) axes turning with the camera, with grey dots for the negative ends. Click an arrow or dot to look that way: walking, X/Z turn you and Y looks up or down; in the overview, X/Z swing round to that side and Y gives a top-down view. Under it, the camera position in metres (x east, y up, z south).
 
 The 3D view is a small company floor: a corridor with a row of rooms behind it, the **Server room** (glass front, racks), the **IT office**, **Accounting** and **Sales**. Each room has a doorway with its name over it, and a label in the corner tells you where you are. PCs, laptops and APs sit in cubicles in an office (IT by default). Move them by dragging them onto another office's floor, or with the Room dropdown in the side panel; missions can place devices too (`"room": "sales"`). Rooms have fixed widths and grow deeper as they fill, so adding devices never moves anything already placed.
 
@@ -152,7 +182,7 @@ Add an entry to `MISSIONS` in `backend/app/missions.py`. Each entry has:
 
 ## Roadmap
 
-- VLANs and trunks, SVIs on switches, NAT/PAT
 - Blue Team scenarios: attack traffic, threat map, log analysis, patching SQLi/XSS
-- DHCP, DNS
+- DNS
+- Redistribution between routing protocols, OSPF multi-area rules (area 0 backbone)
 - Leaderboards

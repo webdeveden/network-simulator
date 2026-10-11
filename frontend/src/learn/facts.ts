@@ -80,8 +80,10 @@ export function deviceFacts(topo: Topology, d: Device): Fact[] {
       facts.push({ label: i.name, value: `${i.ip}/${i.prefix} → network ${networkOf(i.ip, i.prefix)}  (${state})`, tone: state === 'up' ? 'ok' : 'warn' })
     }
     if (!d.ifaces.some((i) => i.ip)) facts.push({ label: 'interfaces', value: 'no addresses yet', tone: 'warn' })
-    const statics = routingTable(d).filter((r) => r.kind === 'static').length
-    facts.push({ label: 'routes', value: `${routingTable(d).filter((r) => r.kind === 'connected').length} connected, ${statics} static${d.routes.length > statics ? `, ${d.routes.length - statics} inactive` : ''}` })
+    const table = routingTable(topo, d)
+    const statics = table.filter((r) => r.kind === 'static').length
+    const learned = table.filter((r) => r.kind !== 'connected' && r.kind !== 'static' && r.kind !== 'dhcp').length
+    facts.push({ label: 'routes', value: `${table.filter((r) => r.kind === 'connected').length} connected, ${statics} static${learned ? `, ${learned} learned` : ''}${d.routes.length > statics ? `, ${d.routes.length - statics} inactive` : ''}` })
   }
 
   if (d.type === 'firewall') facts.push({ label: 'policy', value: `${d.fwRules.length} rule${d.fwRules.length === 1 ? '' : 's'}, default ${d.fwDefault}`, tone: d.fwDefault === 'deny' ? 'ok' : 'warn' })

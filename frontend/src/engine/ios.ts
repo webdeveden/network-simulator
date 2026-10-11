@@ -5,144 +5,81 @@
  * interface config and line config. Keywords can be abbreviated as long as
  * they stay unambiguous (`sh ip int br`, `conf t`, `int g0/0`).
  */
-import { execute, type CommandResult, type Line, type LineKind } from './commands'
-import { routingTable, sendPacket, type SimState } from './forwarding'
-import { inSubnet, ipToInt, isValidIp, maskInt, networkOf, prefixToMask } from './ip'
-import { cableProblem, DEVICE_CATALOG, getDevice, linkActive, linkOn, linksOn, netIfaces, peerOf } from './network'
-import type { Device, DeviceType, FwRule, Iface, IosConfig, IosSecret, SsidConfig, Topology, VtyTransport, WlanConfig } from './types'
+import { execute, type CommandResult, type Line } from './commands'
+import { hasSvi, routingTable, sendPacket, type SimState } from './forwarding'
+import { inSubnet, ipToInt, isValidIp, networkOf, prefixToMask } from './ip'
+import {
+  CAP,
+  ciscoMac,
+  conf,
+  fail,
+  ifaceName,
+  isIos,
+  isL2,
+  L,
+  longName,
+  maskToPrefix,
+  MODEL,
+  parseIface,
+  physicalPort,
+  shortName,
+  showSecret,
+  tip,
+  type7,
+  wlan,
+  type Ctx,
+  type Frame,
+  type Mode,
+  type Pending,
+  type Result,
+  type Session,
+  type Spec,
+} from './iosBase'
+import { configHead, configIface, configTail, ipAddressDhcp, NET_SPECS } from './iosNet'
+import { DEFAULT_PORT, vlanExists } from './l2'
+import { cableProblem, getDevice, isConsolePort, isRadio, isSubIface, isSvi, isVirtual, linkActive, linkOn, linksOn, netIfaces, peerOf, physPort, portKind } from './network'
+import type { Device, FwRule, Iface, IosConfig, SsidConfig, Topology, VtyTransport } from './types'
 
-export type Mode = 'user' | 'priv' | 'config' | 'if' | 'line' | 'ssid'
-
-export interface Frame {
-  deviceId: string
-  mode: Mode
-  iface?: string
-  /** SSID being edited in `dot11 ssid` mode. */
-  ssid?: string
-  /** Set when this frame was opened from another device (SSH, or a console cable when `serial`); `exit` closes it. */
-  remote?: { user: string; ip: string; serial?: boolean }
-}
-
-export type Pending =
-  | { kind: 'enable'; tries: number }
-  | { kind: 'ssh'; deviceId: string; ip: string; user: string; tries: number; fromHost: boolean }
-  | { kind: 'rsa' }
-
-export interface Session {
-  frames: Frame[]
-  pending?: Pending
-}
-
-export interface Ctx {
-  topo: Topology
-  state: SimState
-  s: Session
-  f: Frame
-  dev: Device
-  promptLen: number
-}
-
-type Result = CommandResult | Line[]
-
-interface Spec {
-  words: string[]
-  modes: Mode[]
-  help: string
-  /** Shown by `?` once all keywords are typed. */
-  syntax?: string[]
-  /** Matched only when typed in full (old NetSim aliases), never listed. */
-  hidden?: boolean
-  only?: DeviceType[]
-  run: (c: Ctx, rest: string[]) => Result
-}
-
-const L = (text: string, kind: LineKind = 'out'): Line => ({ text, kind })
-const tip = (text: string): Line => L(`  ↳ ${text}`, 'muted')
-const fail = (text: string, ...tips: string[]): Line[] => [L(text, 'err'), ...tips.map(tip)]
-
-export const isIos = (d: Device) => d.type === 'router' || d.type === 'switch' || d.type === 'firewall' || d.type === 'ap' || d.type === 'isp'
-const isL2 = (d: Device) => DEVICE_CATALOG[d.type].layer === 2
-const conf = (d: Device): IosConfig => (d.ios ??= {})
-const wlan = (d: Device): WlanConfig => (conf(d).wlan ??= { ssids: {} })
-
-const MODEL: Record<string, string> = { router: 'NS-2911', switch: 'NS-2960', firewall: 'NS-ASA', ap: 'NS-AIR-2700', isp: 'NS-ISP-PE' }
-const CAP: Record<string, string> = { router: 'R', switch: 'S', firewall: 'F', ap: 'T', isp: 'R' }
-
-// ---------- names, masks, fake hashes ----------
-
-const LONG: Record<string, string> = { g: 'GigabitEthernet', fa: 'FastEthernet', d: 'Dot11Radio' }
-const SHORT: Record<string, string> = { g: 'Gig ', fa: 'Fas ', d: 'Dot11 ' }
-const IFNAME = /^(g|fa|d)(\d+(?:\/\d+)?)$/
-
-export function longName(n: string): string {
-  const m = IFNAME.exec(n)
-  return m ? LONG[m[1]] + m[2] : n
-}
-const shortName = (n: string) => {
-  const m = IFNAME.exec(n)
-  return m ? SHORT[m[1]] + m[2] : n
-}
-
-/** Accepts `g0/0`, `gi0/0`, `GigabitEthernet0/0`, `fa0/1`, or the type and number as two tokens. */
-function parseIface(dev: Device, tokens: string[]): Iface | undefined {
-  const text = (/\d/.test(tokens[0] ?? '') ? tokens[0] : (tokens[0] ?? '') + (tokens[1] ?? '')).toLowerCase()
-  const m = /^([a-z0-9]*?[a-z])(\d+(?:\/\d+)?)$/.exec(text)
-  if (!m) return undefined
-  const kind = 'gigabitethernet'.startsWith(m[1])
-    ? 'g'
-    : 'fastethernet'.startsWith(m[1])
-      ? 'fa'
-      : 'dot11radio'.startsWith(m[1])
-        ? 'd'
-        : null
-  return kind ? dev.ifaces.find((i) => i.name === kind + m[2]) : undefined
-}
-
-export function maskToPrefix(mask: string): number | null {
-  if (!isValidIp(mask)) return null
-  const n = ipToInt(mask) >>> 0
-  for (let p = 0; p <= 32; p++) if (maskInt(p) >>> 0 === n) return p
-  return null
-}
-
-const ciscoMac = (mac: string) => mac.replace(/:/g, '').replace(/(.{4})(?=.)/g, '$1.')
-
-const B64 = './0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
-function fakeHash(s: string, n: number, seed: number): string {
-  let h = seed >>> 0
-  let res = ''
-  for (let k = 0; k < n; k++) {
-    for (const ch of s + k) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0
-    res += B64[h % 64]
-  }
-  return res
-}
-
-const T7_KEY = 'dsfd;kfoA,.iyewrkldJKDHSUBsgvca69834ncxv9873254k;fg87'
-/** Real Cisco type 7 encoding (reversible, which is why `secret` is preferred). */
-function type7(v: string): string {
-  const salt = 8
-  return (
-    '08' +
-    [...v]
-      .map((c, i) => (c.charCodeAt(0) ^ T7_KEY.charCodeAt((salt + i) % T7_KEY.length)).toString(16).padStart(2, '0'))
-      .join('')
-      .toUpperCase()
-  )
-}
-
-function showSecret(sec: IosSecret, encrypt: boolean): string {
-  if (sec.kind === 'secret') return `secret 5 $1$${fakeHash(sec.value, 4, 7)}$${fakeHash(sec.value, 22, 99)}`
-  return encrypt ? `password 7 ${type7(sec.value)}` : `password ${sec.value}`
-}
+export { isIos, longName, maskToPrefix }
+export type { Ctx, Frame, Mode, Pending, Session }
 
 // ---------- state helpers ----------
+
+/** What kind of port this is, in IOS words: RJ45 copper or an SFP fiber module. */
+function mediaOf(dev: Device, name: string): { fiber: boolean; hardware: string; type: string; status: string } {
+  if (portKind(dev, name) === 'fiber') {
+    const pon = name.startsWith('pon')
+    return pon
+      ? { fiber: true, hardware: 'GPON SFP (fiber)', type: 'GPON', status: 'GPON SFP (fiber)' }
+      : { fiber: true, hardware: 'Gigabit Ethernet SFP (fiber)', type: '1000BaseSX', status: '1000BaseSX SFP (fiber)' }
+  }
+  const fast = name.startsWith('fa')
+  return { fiber: false, hardware: fast ? 'Fast Ethernet (RJ45 copper)' : 'Gigabit Ethernet (RJ45 copper)', type: 'RJ45', status: fast ? '10/100BaseTX' : '10/100/1000BaseTX' }
+}
 
 type IfStatus = { status: string; protocol: string }
 function ifStatus(topo: Topology, dev: Device, i: Iface): IfStatus {
   if (i.shutdown) return { status: 'administratively down', protocol: 'down' }
   if (i.name === 'd0') return dev.ios?.wlan?.radioSsid ? { status: 'up', protocol: 'up' } : { status: 'reset', protocol: 'down' }
-  const l = linkOn(topo, dev.id, i.name)
+  if (i.name === 'lo0') return { status: 'up', protocol: 'up' }
+  if (isSvi(i.name)) {
+    // An SVI is up while its VLAN exists and some port carrying that VLAN is up.
+    const v = Number(i.name.slice(4))
+    const carried = vlanExists(dev, v) && dev.ifaces.some((p) => {
+      if (p.shutdown || !physicalPort(dev, p.name)) return false
+      const sp = p.switchport ?? DEFAULT_PORT
+      const inVlan = sp.mode === 'trunk' ? !sp.allowed || sp.allowed.includes(v) : (sp.vlan ?? 1) === v
+      const l = linkOn(topo, dev.id, p.name)
+      return inVlan && !!l && linkActive(topo, l)
+    })
+    return carried ? { status: 'up', protocol: 'up' } : { status: 'up', protocol: 'down' }
+  }
+  if (isSubIface(i.name)) {
+    const parent = dev.ifaces.find((p) => p.name === physPort(i.name))
+    if (parent?.shutdown) return { status: 'administratively down', protocol: 'down' }
+    if (i.vlan === undefined) return { status: 'up', protocol: 'down' }
+  }
+  const l = linkOn(topo, dev.id, physPort(i.name))
   if (!l || !linkActive(topo, l)) return { status: 'down', protocol: 'down' }
   return { status: 'up', protocol: 'up' }
 }
@@ -171,6 +108,7 @@ export function runningConfig(dev: Device): string[] {
   if (c.domain || c.sshVersion) out.push('!')
   for (const [u, sec] of Object.entries(c.users ?? {})) out.push(`username ${u} ${showSecret(sec, enc)}`)
   if (Object.keys(c.users ?? {}).length) out.push('!')
+  out.push(...configHead(dev))
   for (const [name, sc] of Object.entries(c.wlan?.ssids ?? {})) {
     out.push(`dot11 ssid ${name}`)
     if (sc.open) out.push('   authentication open')
@@ -186,10 +124,12 @@ export function runningConfig(dev: Device): string[] {
       if (c.wlan?.aes) out.push(' encryption mode ciphers aes-ccm')
       if (c.wlan?.radioSsid) out.push(` ssid ${c.wlan.radioSsid}`)
     }
-    if (!isL2(dev)) out.push(i.ip ? ` ip address ${i.ip} ${prefixToMask(i.prefix!)}` : ' no ip address')
+    out.push(...configIface(dev, i))
+    if (!isL2(dev) || isSvi(i.name)) out.push(i.dhcp ? ' ip address dhcp' : i.ip ? ` ip address ${i.ip} ${prefixToMask(i.prefix!)}` : ' no ip address')
     if (i.shutdown) out.push(' shutdown')
     out.push('!')
   }
+  out.push(...configTail(dev))
   for (const r of dev.routes) out.push(`ip route ${r.network} ${prefixToMask(r.prefix)} ${r.via}`)
   if (dev.routes.length) out.push('!')
   if (dev.type === 'firewall') {
@@ -219,10 +159,10 @@ const PRIV: Mode[] = ['priv']
 const CFG: Mode[] = ['config']
 const IF: Mode[] = ['if']
 const LINE: Mode[] = ['line']
-const SUB: Mode[] = ['config', 'if', 'line', 'ssid']
+const SUB: Mode[] = ['config', 'if', 'line', 'ssid', 'router', 'vlan', 'dhcp']
 const SSID: Mode[] = ['ssid']
-const AP: DeviceType[] = ['ap']
-const L3: DeviceType[] = ['router', 'firewall', 'isp']
+const AP: Device['type'][] = ['ap']
+const L3: Device['type'][] = ['router', 'firewall', 'isp']
 
 const HELP: Record<string, string> = {
   show: 'Show running system information',
@@ -318,7 +258,7 @@ const SPECS: Spec[] = [
         const st = ifStatus(c.topo, c.dev, i)
         lines.push(
           L(
-            `${longName(i.name).padEnd(23)}${(i.ip ?? 'unassigned').padEnd(16)}YES ${(i.ip ? 'manual' : 'unset').padEnd(7)}${st.status.padEnd(22)}${st.protocol}`,
+            `${longName(i.name).padEnd(23)}${(i.ip ?? 'unassigned').padEnd(16)}YES ${(i.dhcp ? 'DHCP' : i.ip ? 'manual' : 'unset').padEnd(7)}${st.status.padEnd(22)}${st.protocol}`,
             st.protocol === 'up' ? 'ok' : 'muted',
           ),
         )
@@ -326,7 +266,7 @@ const SPECS: Spec[] = [
       return lines
     },
   },
-  { words: ['show', 'ip', 'route'], modes: EXEC, help: 'IP routing table', only: L3, run: (c) => showIpRoute(c.dev) },
+  { words: ['show', 'ip', 'route'], modes: EXEC, help: 'IP routing table', only: L3, run: (c) => showIpRoute(c.topo, c.dev) },
   {
     words: ['show', 'ip', 'ssh'],
     modes: EXEC,
@@ -361,18 +301,45 @@ const SPECS: Spec[] = [
       }
       return list.flatMap((i) => {
         const st = ifStatus(c.topo, c.dev, i)
-        const kind = i.name.startsWith('g') ? 'Gigabit' : 'Fast'
+        const kind = i.name.startsWith('fa') ? 'Fast' : 'Gigabit'
+        const media = mediaOf(c.dev, i.name)
         const l = linkOn(c.topo, c.dev.id, i.name)
         const problem = l && cableProblem(c.topo, l)
         return [
           L(`${longName(i.name)} is ${st.status}, line protocol is ${st.protocol}`, st.protocol === 'up' ? 'ok' : 'err'),
           ...(problem ? [tip(problem)] : []),
-          L(`  Hardware is NetSim ${kind} Ethernet, address is ${ciscoMac(i.mac)} (bia ${ciscoMac(i.mac)})`),
+          L(`  Hardware is ${media.hardware}, address is ${ciscoMac(i.mac)} (bia ${ciscoMac(i.mac)})`),
           ...(i.description ? [L(`  Description: ${i.description}`)] : []),
           ...(i.ip ? [L(`  Internet address is ${i.ip}/${i.prefix}`)] : []),
           L(`  MTU 1500 bytes, BW ${kind === 'Gigabit' ? '1000000' : '100000'} Kbit/sec, DLY 10 usec`),
+          L(`  Full-duplex, ${kind === 'Gigabit' ? '1000' : '100'}Mb/s, media type is ${media.type}`, media.fiber ? 'info' : 'out'),
         ]
       })
+    },
+  },
+  {
+    words: ['show', 'interfaces', 'status'],
+    modes: EXEC,
+    help: 'Show interface line status, with each port\'s media type (copper or fiber)',
+    run: (c) => {
+      const lines = [L('Port         Name               Status       Vlan       Duplex  Speed Type', 'info')]
+      for (const i of c.dev.ifaces) {
+        if (isVirtual(i.name) || isConsolePort(i.name) || isRadio(i.name)) continue
+        const l = linkOn(c.topo, c.dev.id, i.name)
+        const status = i.shutdown ? 'disabled' : l && linkActive(c.topo, l) ? 'connected' : 'notconnect'
+        const sp = i.switchport ?? DEFAULT_PORT
+        const vlan = c.dev.type !== 'switch' ? 'routed' : sp.mode === 'trunk' ? 'trunk' : String(sp.vlan ?? 1)
+        const media = mediaOf(c.dev, i.name)
+        const speed = i.name.startsWith('fa') ? 'a-100' : 'a-1000'
+        lines.push(
+          L(
+            `${i.name.replace(/^fa/, 'Fa').replace(/^g(?=\d)/, 'Gi').padEnd(13)}${(i.description ?? '').slice(0, 18).padEnd(19)}${status.padEnd(13)}${vlan.padEnd(11)}${(status === 'connected' ? 'a-full' : 'auto').padEnd(8)}${(status === 'connected' ? speed : 'auto').padEnd(6)}${media.status}`,
+            media.fiber ? 'info' : status === 'connected' ? 'ok' : 'muted',
+          ),
+        )
+      }
+      lines.push(tip('Fiber (SFP) ports take a fiber cable; RJ45 ports take copper (straight-through or crossover).'))
+      return lines
     },
   },
   {
@@ -382,13 +349,14 @@ const SPECS: Spec[] = [
     only: ['switch'],
     run: (c) => {
       const entries = Object.entries(c.state.mac[c.dev.id] ?? {})
+      const vlanOf = (m: string) => c.state.macVlan?.[c.dev.id]?.[m] ?? 1
       return [
         L('          Mac Address Table', 'info'),
         L('-------------------------------------------', 'info'),
         L(''),
         L('Vlan    Mac Address       Type        Ports', 'info'),
         L('----    -----------       --------    -----', 'info'),
-        ...entries.map(([m, p]) => L(`   1    ${ciscoMac(m)}    DYNAMIC     ${shortName(p).replace(' ', '')}`)),
+        ...entries.map(([m, p]) => L(`${String(vlanOf(m)).padStart(4)}    ${ciscoMac(m)}    DYNAMIC     ${shortName(p).replace(' ', '')}`)),
         L(`Total Mac Addresses for this criterion: ${entries.length}`),
         ...(entries.length ? [] : [tip('Switches learn MACs from traffic. Ping across the switch, then look again.')]),
       ]
@@ -493,13 +461,42 @@ const SPECS: Spec[] = [
     words: ['interface'],
     modes: CFG,
     help: 'Select an interface to configure',
-    syntax: ['GigabitEthernet  e.g. interface g0/0', 'FastEthernet     e.g. interface fa0/1', 'Dot11Radio       e.g. interface Dot11Radio0 (access points)'],
+    syntax: [
+      'GigabitEthernet  e.g. interface g0/0',
+      'FastEthernet     e.g. interface fa0/1',
+      'range            several ports at once, e.g. interface range fa0/1 - 4',
+      'g0/0.10          router subinterface (router on a stick)',
+      'Vlan             switch VLAN interface, e.g. interface vlan 1',
+      'Loopback         e.g. interface loopback 0',
+      'Dot11Radio       e.g. interface Dot11Radio0 (access points)',
+    ],
+    run: (c, rest) => selectInterface(c, rest),
+  },
+  {
+    words: ['interface', 'range'],
+    modes: CFG,
+    help: 'Configure several interfaces at once',
+    syntax: ['WORD  e.g. interface range fa0/1 - 4, fa0/7'],
     run: (c, rest) => {
-      const i = parseIface(c.dev, rest)
-      if (!i) return fail('% Invalid interface', `${c.dev.name} has: ${c.dev.ifaces.map((x) => x.name).join(', ')}`)
+      const names = parseRange(c.dev, rest.join(' '))
+      if (typeof names === 'string') return fail(names)
       c.f.mode = 'if'
-      c.f.iface = i.name
+      c.f.iface = names[0]
+      c.f.range = names
       return []
+    },
+  },
+  {
+    words: ['no', 'interface'],
+    modes: CFG,
+    help: 'Delete a subinterface, VLAN interface or loopback',
+    run: (c, rest) => {
+      const name = ifaceName(rest)
+      const i = name && c.dev.ifaces.find((x) => x.name === name)
+      if (!i) return fail('% Invalid interface')
+      if (!isSubIface(i.name) && !isSvi(i.name) && !(i.name === 'lo0' && c.dev.type !== 'isp')) return fail('% Physical interfaces cannot be deleted')
+      c.dev.ifaces = c.dev.ifaces.filter((x) => x !== i)
+      return { lines: [], mutated: true }
     },
   },
   {
@@ -513,7 +510,7 @@ const SPECS: Spec[] = [
       if (typeof r === 'string') return fail(r)
       if (c.dev.routes.some((x) => x.network === r.network && x.prefix === r.prefix && x.via === r.via)) return []
       c.dev.routes.push(r)
-      const active = routingTable(c.dev).some((x) => x.kind === 'static' && x.nextHop === r.via)
+      const active = c.dev.ifaces.some((i) => i.ip && !i.shutdown && inSubnet(r.via, i.ip, i.prefix!))
       return { lines: active ? [] : [tip(`Next hop ${r.via} is not in a connected subnet, so this route stays inactive.`)], mutated: true }
     },
   },
@@ -691,7 +688,9 @@ const SPECS: Spec[] = [
     help: 'Set the IP address of an interface',
     syntax: ['A.B.C.D  IP address', '   e.g. ip address 10.0.0.1 255.255.255.0'],
     run: (c, rest) => {
-      if (isL2(c.dev)) return fail('% Layer 2 switchport: it cannot have an IP address.')
+      if (isL2(c.dev) && !isSvi(c.f.iface!))
+        return fail('% Layer 2 switchport: it cannot have an IP address.', c.dev.type === 'switch' ? 'A switch gets its management address on a VLAN interface: interface vlan 1 → ip address …' : '')
+      if (rest[0]?.toLowerCase() === 'dhcp') return ipAddressDhcp(c)
       const [ip, mask] = rest
       if (!ip || !mask) return fail('% Incomplete command.', 'ip address <ip> <subnet mask>, e.g. ip address 10.0.0.1 255.255.255.0')
       if (!isValidIp(ip)) return fail(`% Invalid IP address ${ip}`)
@@ -708,7 +707,11 @@ const SPECS: Spec[] = [
       const i = c.dev.ifaces.find((x) => x.name === c.f.iface)!
       i.ip = ip
       i.prefix = prefix
-      return { lines: [], mutated: true }
+      delete i.dhcp
+      delete i.dhcpGateway
+      const lines: Line[] = []
+      if (isSubIface(i.name) && i.vlan === undefined) lines.push(tip(`Set the VLAN first or this subinterface stays down: encapsulation dot1Q ${i.name.split('.')[1]}`))
+      return { lines, mutated: true }
     },
   },
   {
@@ -719,6 +722,8 @@ const SPECS: Spec[] = [
       const i = c.dev.ifaces.find((x) => x.name === c.f.iface)!
       delete i.ip
       delete i.prefix
+      delete i.dhcp
+      delete i.dhcpGateway
       return { lines: [], mutated: true }
     },
   },
@@ -951,6 +956,8 @@ const SPECS: Spec[] = [
     },
   },
 
+  ...NET_SPECS,
+
   // ----- shared sub-mode navigation -----
   {
     words: ['exit'],
@@ -958,19 +965,78 @@ const SPECS: Spec[] = [
     help: 'Exit from the current mode',
     run: (c) => {
       c.f.mode = c.f.mode === 'config' ? 'priv' : 'config'
-      delete c.f.iface
-      delete c.f.ssid
+      clearSub(c.f)
       return []
     },
   },
   { words: ['end'], modes: SUB, help: 'Exit to privileged EXEC mode', run: (c) => endConfig(c) },
 ]
 
+/** Leaves interface, line, SSID, router, VLAN or DHCP pool mode. */
+function clearSub(f: Frame) {
+  delete f.iface
+  delete f.ssid
+  delete f.range
+  delete f.proto
+  delete f.vlan
+  delete f.pool
+}
+
 function endConfig(c: Ctx): Line[] {
   c.f.mode = 'priv'
-  delete c.f.iface
-  delete c.f.ssid
+  clearSub(c.f)
   return [L(`%SYS-5-CONFIG_I: Configured from console by ${c.f.remote ? c.f.remote.user + ' on vty0' : 'console'}`, 'muted')]
+}
+
+
+/** `interface X`: an existing port, or a new subinterface, VLAN interface or loopback. */
+function selectInterface(c: Ctx, rest: string[]): Result {
+  const name = ifaceName(rest)
+  const has = (n: string) => c.dev.ifaces.some((i) => i.name === n)
+  const others = `${c.dev.name} has: ${c.dev.ifaces.map((x) => x.name).join(', ')}`
+  if (!name) return fail('% Invalid interface', others)
+  if (!has(name)) {
+    const mac = () => c.dev.ifaces.find((i) => i.name === physPort(name))?.mac ?? c.dev.ifaces[0].mac
+    if (isSubIface(name)) {
+      if (!L3.includes(c.dev.type)) return fail('% Subinterfaces are for routers (router on a stick). Switch ports use switchport commands.')
+      if (!physicalPort(c.dev, physPort(name))) return fail(`% ${physPort(name)} can't carry subinterfaces`, others)
+      const sub: Iface = { name, mac: mac() }
+      c.dev.ifaces.splice(c.dev.ifaces.findIndex((i) => i.name === physPort(name)) + 1 + c.dev.ifaces.filter((i) => physPort(i.name) === physPort(name) && i.name !== physPort(name)).length, 0, sub)
+    } else if (isSvi(name)) {
+      if (c.dev.type !== 'switch') return fail('% VLAN interfaces are for switches. Routers use subinterfaces: interface g0/0.10')
+      const v = Number(name.slice(4))
+      if (v < 1 || v > 4094) return fail('% Invalid VLAN')
+      c.dev.ifaces.push({ name, mac: mac(), vlan: v })
+    } else if (name === 'lo0' || name.startsWith('lo')) {
+      if (!L3.includes(c.dev.type)) return fail('% Loopbacks are for routers and firewalls')
+      if (name !== 'lo0') return fail('% NetSim supports one loopback: interface loopback 0')
+      c.dev.ifaces.push({ name, mac: mac() })
+    } else return fail('% Invalid interface', others)
+  }
+  c.f.mode = 'if'
+  c.f.iface = name
+  delete c.f.range
+  const i = c.dev.ifaces.find((x) => x.name === name)!
+  if (isSvi(name) && !vlanExists(c.dev, i.vlan ?? 1)) return { lines: [tip(`VLAN ${i.vlan} doesn't exist yet, so this interface stays down: vlan ${i.vlan}`)], mutated: true }
+  return { lines: [], mutated: true }
+}
+
+/** `fa0/1 - 4, fa0/7` -> ['fa0/1', 'fa0/2', 'fa0/3', 'fa0/4', 'fa0/7']. */
+function parseRange(dev: Device, text: string): string[] | string {
+  const names: string[] = []
+  for (const part of text.split(',')) {
+    const m = /^(.*?)(\d+)\s*(?:-\s*(\d+))?$/.exec(part.trim())
+    if (!m) return '% Invalid range. e.g. interface range fa0/1 - 4'
+    const a = Number(m[2])
+    const b = Number(m[3] ?? m[2])
+    if (b < a) return '% Invalid range'
+    for (let n = a; n <= b; n++) {
+      const name = ifaceName([`${m[1].replace(/\s+/g, '')}${n}`])
+      if (!name || !dev.ifaces.some((i) => i.name === name)) return `% Invalid interface ${m[1].trim()}${n}`
+      names.push(name)
+    }
+  }
+  return names.length ? names : '% Incomplete command.'
 }
 
 const asLines = (r: Result): Line[] => (Array.isArray(r) ? r : r.lines)
@@ -1015,25 +1081,31 @@ function generateRsa(dev: Device, bitsArg: string | undefined): CommandResult {
 
 // ---------- show helpers ----------
 
-function showIpRoute(dev: Device): Line[] {
+const CODE: Record<string, string> = { connected: 'C ', static: 'S ', dhcp: 'S ', ospf: 'O ', 'ospf-ia': 'O IA', 'ospf-e2': 'O E2', eigrp: 'D ', rip: 'R ', ebgp: 'B ', ibgp: 'B ' }
+
+function showIpRoute(topo: Topology, dev: Device): Line[] {
   const lines = [
-    L('Codes: L - local, C - connected, S - static, * - candidate default', 'muted'),
+    L('Codes: L - local, C - connected, S - static, R - RIP, B - BGP, D - EIGRP,', 'muted'),
+    L('       O - OSPF, IA - OSPF inter area, E2 - OSPF external type 2, * - candidate default', 'muted'),
     L(''),
   ]
-  const table = routingTable(dev)
-  const def = table.find((r) => r.kind === 'static' && r.prefix === 0)
+  const table = routingTable(topo, dev).sort((a, b) => ipToInt(a.network) - ipToInt(b.network) || a.prefix - b.prefix)
+  const def = table.find((r) => r.prefix === 0)
   lines.push(L(def ? `Gateway of last resort is ${def.nextHop} to network 0.0.0.0` : 'Gateway of last resort is not set'), L(''))
   for (const r of table) {
+    const iface = longName(r.iface.name)
     if (r.kind === 'connected') {
-      lines.push(L(`C        ${r.network}/${r.prefix} is directly connected, ${longName(r.iface.name)}`))
-      lines.push(L(`L        ${r.iface.ip}/32 is directly connected, ${longName(r.iface.name)}`))
-    } else {
-      lines.push(L(`${r.prefix === 0 ? 'S*' : 'S '}       ${r.network}/${r.prefix} [1/0] via ${r.nextHop}`))
+      lines.push(L(`C        ${r.network}/${r.prefix} is directly connected, ${iface}`))
+      if (r.prefix < 32) lines.push(L(`L        ${r.iface.ip}/32 is directly connected, ${iface}`))
+      continue
     }
+    const code = (CODE[r.kind].trimEnd() + (r.prefix === 0 ? '*' : '')).padEnd(9)
+    const age = r.kind === 'static' || r.kind === 'dhcp' ? '' : ', 00:02:14'
+    lines.push(L(`${code}${r.network}/${r.prefix} [${r.ad}/${r.metric}] via ${r.nextHop}${age}${r.kind === 'static' ? '' : `, ${iface}`}`, r.kind === 'static' || r.kind === 'dhcp' ? 'out' : 'ok'))
   }
   if (table.length === 0) lines.push(tip('Empty: give an interface an IP address and bring it up first.'))
   for (const r of dev.routes)
-    if (!table.some((x) => x.kind === 'static' && x.network === r.network && x.prefix === r.prefix && x.nextHop === r.via))
+    if (!dev.ifaces.some((i) => i.ip && !i.shutdown && inSubnet(r.via, i.ip, i.prefix!)))
       lines.push(tip(`ip route ${r.network} ${prefixToMask(r.prefix)} ${r.via} is configured but inactive: ${r.via} is not in a connected subnet.`))
   return lines
 }
@@ -1052,7 +1124,7 @@ function showArp(c: Ctx): Line[] {
 // ---------- ping / traceroute / ssh ----------
 
 function ping(c: Ctx, arg: string | undefined): Result {
-  if (isL2(c.dev)) return fail('% This layer 2 switch has no IP address to ping from.')
+  if (isL2(c.dev) && !hasSvi(c.dev)) return fail(`% ${c.dev.name} has no IP address to ping from.`, c.dev.type === 'switch' ? 'Give it one: interface vlan 1 → ip address … → no shutdown' : '')
   if (!arg) return fail('% Incomplete command.')
   const target = resolveTarget(c.topo, arg)
   if (!target) return fail('% Unrecognized host or address, or protocol not running.')
@@ -1082,7 +1154,7 @@ function hopIp(topo: Topology, deviceId: string, linkId?: string): string {
 }
 
 function traceroute(c: Ctx, arg: string | undefined): Result {
-  if (isL2(c.dev)) return fail('% This layer 2 switch has no IP address to trace from.')
+  if (isL2(c.dev) && !hasSvi(c.dev)) return fail(`% ${c.dev.name} has no IP address to trace from.`)
   const target = resolveTarget(c.topo, arg)
   if (!target) return fail(arg ? '% Unrecognized host or address, or protocol not running.' : '% Incomplete command.')
   const r = sendPacket(c.topo, c.state, c.dev.id, target)
@@ -1121,7 +1193,7 @@ export interface SshCheck {
 /** Everything up to the password prompt: reachability, SSH server, vty settings. */
 export function sshPreflight(topo: Topology, state: SimState, from: Device, host: string, fromHost: boolean): SshCheck {
   const closed = (ip: string) => L(fromHost ? `Connection to ${ip} closed by remote host.` : `[Connection to ${ip} closed by foreign host]`, 'muted')
-  if (isL2(from)) return { ok: false, lines: fail('% This layer 2 switch has no IP address to connect from.') }
+  if (isL2(from) && !hasSvi(from)) return { ok: false, lines: fail('% This layer 2 switch has no IP address to connect from.') }
   const ip = resolveTarget(topo, host)
   if (!ip) return { ok: false, lines: fail(fromHost ? `ssh: Could not resolve hostname ${host}` : '% Unknown host') }
   const refused = (why: string) => ({
@@ -1316,14 +1388,31 @@ export function runIos(c: Ctx, raw: string): CommandResult {
 
   let r = resolve(specsFor(c.dev, c.f.mode), tokens)
   // In interface/line mode, a global command drops back to config mode and runs there (like IOS).
-  if (!('spec' in r) && (c.f.mode === 'if' || c.f.mode === 'line' || c.f.mode === 'ssid')) {
+  if (!('spec' in r) && c.f.mode !== 'user' && c.f.mode !== 'priv' && c.f.mode !== 'config') {
     const g = resolve(specsFor(c.dev, 'config'), tokens)
     if ('spec' in g) {
       c.f.mode = 'config'
-      delete c.f.iface
-      delete c.f.ssid
+      clearSub(c.f)
       r = g
     }
+  }
+  if ('spec' in r && c.f.mode === 'if' && c.f.range && r.spec.modes.includes('if')) {
+    // interface range: run the command on every interface in the range.
+    const spec = r.spec
+    const rest = r.rest
+    const range = c.f.range
+    const seen = new Set<string>()
+    const lines: Line[] = []
+    let mutated = false
+    for (const name of range) {
+      if (c.f.mode !== 'if') break
+      c.f.iface = name
+      const res = wrap(spec.run(c, rest))
+      mutated ||= !!res.mutated
+      for (const l of res.lines) if (!seen.has(l.text)) (seen.add(l.text), lines.push(l))
+    }
+    if (c.f.mode === 'if') c.f.iface = range[0]
+    return { lines, mutated }
   }
   if ('spec' in r) return wrap(r.spec.run(c, r.rest))
   if (r.error === 'ambiguous') return { lines: [L(`% Ambiguous command:  "${r.word}"`, 'err')] }
@@ -1351,5 +1440,8 @@ export function iosPrompt(name: string, mode: Mode): string {
     if: `${name}(config-if)#`,
     line: `${name}(config-line)#`,
     ssid: `${name}(config-ssid)#`,
+    router: `${name}(config-router)#`,
+    vlan: `${name}(config-vlan)#`,
+    dhcp: `${name}(dhcp-config)#`,
   }[mode]
 }

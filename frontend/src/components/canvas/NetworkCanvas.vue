@@ -65,8 +65,9 @@ const edges = computed(() =>
   })),
 )
 
+/** Dragging a cable onto a device asks which ports to use. */
 function onConnect(c: Connection) {
-  ws.link(c.source, c.target)
+  ws.requestLink(c.source, c.target)
 }
 
 /** Dragging a room box: where it and its devices started. */

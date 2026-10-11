@@ -355,7 +355,9 @@ const patchPanel: Topic = {
   body: [
     'A patch panel is passive: no power, no IP, no console. It just organises cables. Each office wall jack has a permanent cable run to the rear of a panel port (punched down), and a short patch cord goes from the front of the same port to a switch.',
     'Front port 5 is wired straight through to rear port 5. To move a desk to another switch port, you only swap a patch cord in the rack: nobody pulls cable through walls.',
-    'In NetSim: cable office PCs to the rear side (p1r…p48r) and the switch to the front (p1…p48) of the same port number. Auto does this for you on the 2D map.',
+    'In NetSim, "terminating" the run means cabling the office device (PC, printer, phone, AP) to a rear port (p1r…p48r). Then patch the front of the same number (p1…p48) to the switch. When you drag a cable to the panel on the 2D map, the port picker shows the front and rear rows; in 3D the rear side is the white punch-down row under the jacks.',
+    'Both segments are straight-through, like real structured cabling. NetSim judges the run end to end: PC → panel → switch must behave like one straight cable, so a crossover on one segment takes the link down.',
+    'Check it: `ping` from the PC, or `show mac address-table` on the switch after a ping: the PC\'s MAC appears on the switch port the patch cord is in.',
   ],
   diagram: ['PC ──wall jack ─ ─ ─ rear p5 │PATCH│ front p5 ──patch cord── SW1'].join('\n'),
 }
@@ -413,20 +415,204 @@ const phoneTopic: Topic = {
   examples: [{ title: 'Give the phone an address', commands: ['ip set 192.168.1.60/24', 'gateway 192.168.1.1', 'ping 192.168.1.1'] }],
 }
 
+
+// ---------- VLANs, DHCP, dynamic routing, NAT ----------
+
+const vlans: Topic = {
+  id: 'vlans',
+  title: 'VLANs: several LANs on one switch',
+  body: [
+    'A VLAN splits one switch into separate broadcast domains. Ports in VLAN 10 only talk to other ports in VLAN 10, even on the same switch: Sales and Accounting can share hardware but not traffic.',
+    'An access port belongs to one VLAN and carries untagged frames: that is where PCs, printers and phones plug in. Every port starts in VLAN 1.',
+    'Each VLAN is its own subnet. To go from one VLAN to another, traffic needs a router (see router on a stick).',
+    '`switchport access vlan 10` creates VLAN 10 if it is missing, like real IOS. `vlan 10` + `name SALES` creates and names it yourself.',
+  ],
+  diagram: ['PC1 ─fa0/1 [VLAN 10]  SW1  [VLAN 20] fa0/2─ PC2', '        same switch, separate networks'].join('\n'),
+  examples: [
+    {
+      title: 'Create VLAN 10 and put a port in it',
+      commands: ['enable', 'configure terminal', 'vlan 10', 'name SALES', 'exit', 'interface fa0/1', 'switchport mode access', 'switchport access vlan 10', 'end', 'show vlan brief'],
+    },
+    { title: 'Several ports at once', commands: ['enable', 'configure terminal', 'interface range fa0/2 - 4', 'switchport access vlan 10', 'end'] },
+  ],
+}
+
+const trunks: Topic = {
+  id: 'trunks',
+  title: 'Trunks: carrying many VLANs on one cable',
+  body: [
+    'A trunk port carries frames for many VLANs between switches (or to a router). Each frame gets an 802.1Q tag saying which VLAN it belongs to.',
+    'The native VLAN (VLAN 1 unless you change it) crosses the trunk untagged. It must match on both ends.',
+    '`switchport trunk allowed vlan 10,20` limits which VLANs cross. A switch in the middle must also have the VLAN created, or it drops those frames.',
+    'NetSim has no DTP auto-negotiation: set `switchport mode trunk` on both ends.',
+  ],
+  diagram: ['SW1 g0/1 ══ trunk (VLAN 10, 20 tagged) ══ g0/1 SW2'].join('\n'),
+  examples: [
+    { title: 'Make the uplink a trunk', commands: ['enable', 'configure terminal', 'interface g0/1', 'switchport mode trunk', 'switchport trunk allowed vlan 1,10,20', 'end', 'show interfaces trunk'] },
+  ],
+}
+
+const switchMgmt: Topic = {
+  id: 'svi',
+  title: 'A management address for the switch',
+  body: [
+    'Switch ports have no IP addresses. To ping or SSH to the switch itself, give it an address on a VLAN interface (SVI), usually `interface vlan 1` or a dedicated management VLAN.',
+    'For traffic to other subnets (like the admin PC in another VLAN), set `ip default-gateway` to the router.',
+  ],
+  examples: [
+    { title: 'Address the switch', commands: ['enable', 'configure terminal', 'interface vlan 1', 'ip address 10.0.0.2 255.255.255.0', 'no shutdown', 'exit', 'ip default-gateway 10.0.0.1', 'end', 'show ip interface brief'] },
+  ],
+}
+
+const roas: Topic = {
+  id: 'roas',
+  title: 'Router on a stick (inter-VLAN routing)',
+  body: [
+    'One router port, cabled to a switch trunk, can route between all the VLANs. Split it into subinterfaces: `g0/0.10` for VLAN 10, `g0/0.20` for VLAN 20.',
+    'Each subinterface gets `encapsulation dot1Q <vlan>` and an IP address: that address is the default gateway for PCs in that VLAN.',
+    'The physical port itself needs `no shutdown` and usually no IP address. The switch port facing the router must be a trunk.',
+  ],
+  diagram: ['R1 g0/0.10 192.168.10.1  ┐', 'R1 g0/0.20 192.168.20.1  ┴─ trunk ─ SW1 ─ PCs in VLAN 10 and 20'].join('\n'),
+  examples: [
+    {
+      title: 'Gateways for VLAN 10 and 20',
+      commands: [
+        'enable',
+        'configure terminal',
+        'interface g0/0',
+        'no shutdown',
+        'interface g0/0.10',
+        'encapsulation dot1Q 10',
+        'ip address 192.168.10.1 255.255.255.0',
+        'interface g0/0.20',
+        'encapsulation dot1Q 20',
+        'ip address 192.168.20.1 255.255.255.0',
+        'end',
+        'show ip interface brief',
+      ],
+    },
+  ],
+}
+
+const dynamicRouting: Topic = {
+  id: 'dynamic',
+  title: 'Dynamic routing: OSPF, EIGRP, RIP',
+  body: [
+    'Instead of typing a static route on every router, routers can run a routing protocol: they find neighbors on shared subnets, exchange what they know and build the table themselves.',
+    'OSPF (link state, open standard) picks paths by cost. EIGRP (Cisco) uses bandwidth and delay. RIP counts hops (max 15). `network` statements choose which interfaces take part.',
+    'OSPF network statements use a wildcard mask, the inverse of the subnet mask: `0.0.0.255` for a /24. Neighbors must be in the same area; area 0 is the backbone.',
+    '`passive-interface` advertises a LAN without sending hellos to the PCs on it. `default-information originate` shares your default route (to the ISP) with everyone.',
+    'If several sources know a prefix, the lowest administrative distance wins: connected 0, static 1, eBGP 20, EIGRP 90, OSPF 110, RIP 120.',
+  ],
+  examples: [
+    {
+      title: 'OSPF on every 10.x interface',
+      commands: ['enable', 'configure terminal', 'router ospf 1', 'network 10.0.0.0 0.255.255.255 area 0', 'passive-interface g0/0', 'end', 'show ip ospf neighbor', 'show ip route'],
+      note: 'Do the same on the neighbor router, then check show ip route for O routes.',
+    },
+    { title: 'EIGRP instead', commands: ['enable', 'configure terminal', 'router eigrp 100', 'network 10.0.0.0', 'end', 'show ip eigrp neighbors'] },
+    { title: 'RIP version 2', commands: ['enable', 'configure terminal', 'router rip', 'version 2', 'no auto-summary', 'network 10.0.0.0', 'end', 'show ip protocols'] },
+  ],
+}
+
+const bgp: Topic = {
+  id: 'bgp',
+  title: 'BGP: routing between companies',
+  body: [
+    'BGP connects autonomous systems (AS): your company, your ISP, the rest of the Internet. Unlike OSPF, neighbors are configured by hand: `neighbor <ip> remote-as <their AS>`.',
+    'eBGP runs between different ASes, iBGP inside one. `network <prefix> mask <mask>` advertises a prefix, but only if the router already has that exact route.',
+    'Private AS numbers are 64512–65534. In NetSim, BGP neighbors must share a subnet.',
+  ],
+  examples: [
+    {
+      title: 'Peer with the ISP and advertise the office',
+      commands: ['enable', 'configure terminal', 'router bgp 65001', 'neighbor 203.0.113.1 remote-as 65000', 'network 192.168.1.0 mask 255.255.255.0', 'end', 'show ip bgp summary'],
+    },
+  ],
+}
+
+const dhcpServer: Topic = {
+  id: 'dhcp',
+  title: 'DHCP: handing out addresses',
+  body: [
+    'DHCP gives hosts their IP, mask, gateway and DNS automatically. The client broadcasts DISCOVER; a server answers with an OFFER, the client REQUESTs it, the server ACKs.',
+    'A router can be the server: `ip dhcp pool` with a `network`, a `default-router` and a `dns-server`. Exclude the addresses you assign by hand (gateways, servers, printers) with `ip dhcp excluded-address`.',
+    'Broadcasts stop at routers. If the server is on another subnet, the client\'s gateway relays the request: `ip helper-address <server>` on that interface.',
+  ],
+  examples: [
+    {
+      title: 'A pool for the office LAN',
+      commands: [
+        'enable',
+        'configure terminal',
+        'ip dhcp excluded-address 192.168.1.1 192.168.1.10',
+        'ip dhcp pool OFFICE',
+        'network 192.168.1.0 255.255.255.0',
+        'default-router 192.168.1.1',
+        'dns-server 8.8.8.8',
+        'end',
+        'show ip dhcp pool',
+      ],
+    },
+    { title: 'Relay for a LAN behind this router', commands: ['enable', 'configure terminal', 'interface g0/1', 'ip helper-address 10.0.0.1', 'end'] },
+  ],
+}
+
+const dhcpClient: Topic = {
+  id: 'dhcpclient',
+  title: 'Getting an address by DHCP',
+  body: [
+    'Instead of typing an address, ask the network for one: `dhcp` (or `ipconfig /renew`). You get an IP, mask and default gateway from the DHCP server for your LAN or VLAN.',
+    'No answer? The cable or Wi-Fi must be up, a router interface must be in your VLAN, and it needs a pool for your subnet or an `ip helper-address`. The output says which is missing.',
+    '`dhcp release` gives the address back. Typing a static address turns DHCP off.',
+  ],
+  examples: [{ title: 'Ask for an address', commands: ['dhcp', 'ifconfig'] }],
+}
+
+const nat: Topic = {
+  id: 'nat',
+  title: 'NAT: private addresses on the Internet',
+  body: [
+    'Private addresses (192.168.x.x, 10.x.x.x) are not routed on the Internet: the ISP has no way back to them. NAT on the edge router rewrites them to its public address on the way out, and back on the way in.',
+    'Mark the sides: `ip nat inside` on the LAN interface, `ip nat outside` toward the ISP. Then PAT (overload) lets every host share the outside address: `ip nat inside source list 1 interface g0/1 overload`, with `access-list 1` listing the inside networks.',
+    'Static NAT (`ip nat inside source static <inside> <public>`) publishes one inside server on a public address.',
+    'Access lists use wildcard masks: `0.0.0.255` matches a /24.',
+  ],
+  diagram: ['PC 192.168.1.10 ─ [inside g0/0  R1  g0/1 outside 203.0.113.2] ─ ISP', '          src 192.168.1.10  →  src 203.0.113.2'].join('\n'),
+  examples: [
+    {
+      title: 'PAT for the office',
+      commands: [
+        'enable',
+        'configure terminal',
+        'access-list 1 permit 192.168.1.0 0.0.0.255',
+        'interface g0/0',
+        'ip nat inside',
+        'interface g0/1',
+        'ip nat outside',
+        'exit',
+        'ip nat inside source list 1 interface g0/1 overload',
+        'end',
+        'show ip nat translations',
+      ],
+    },
+  ],
+}
+
 const TOPICS: Record<DeviceType, Topic[]> = {
-  pc: [ipBasics, gateway, testing, cabling, ports, sshClient],
-  laptop: [wifi, ipBasics, gateway, testing, sshClient],
-  mobile: [wifi, ipBasics, gateway, testing],
+  pc: [ipBasics, gateway, dhcpClient, testing, cabling, ports, sshClient],
+  laptop: [wifi, ipBasics, gateway, dhcpClient, testing, sshClient],
+  mobile: [wifi, ipBasics, gateway, dhcpClient, testing],
   server: [serverRole, ipBasics, gateway, testing, ports],
-  switch: [switching, cablingIos, structured, iosModes, portAdmin, neighbors, saving],
+  switch: [switching, vlans, trunks, switchMgmt, cablingIos, structured, iosModes, portAdmin, neighbors, saving],
   ap: [apRole, apSecure, wifiSecurity, iosModes, saving],
-  router: [routing, cablingIos, iosModes, ifaceConfig, staticRoutes, troubleshooting, hardening, saving],
-  firewall: [firewalling, fwRules, iosModes, ifaceConfig, staticRoutes, saving],
+  router: [routing, cablingIos, iosModes, ifaceConfig, staticRoutes, dynamicRouting, roas, dhcpServer, nat, bgp, troubleshooting, hardening, saving],
+  firewall: [firewalling, fwRules, iosModes, ifaceConfig, staticRoutes, dynamicRouting, nat, saving],
   patch: [patchPanel, structured, cabling],
   modem: [ontTopic, cabling, structured],
-  printer: [printerTopic, ipBasics, gateway, testing],
-  phone: [phoneTopic, ipBasics, gateway, testing],
-  isp: [ispTopic, routing, iosModes, ifaceConfig, staticRoutes],
+  printer: [printerTopic, ipBasics, gateway, dhcpClient, testing],
+  phone: [phoneTopic, ipBasics, gateway, dhcpClient, testing],
+  isp: [ispTopic, routing, iosModes, ifaceConfig, staticRoutes, bgp, dhcpServer],
 }
 
 export function topicsFor(type: DeviceType): Topic[] {

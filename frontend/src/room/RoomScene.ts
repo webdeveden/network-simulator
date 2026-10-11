@@ -7,9 +7,17 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js'
 import { buildCity } from './city'
 import { CABLES, getDevice, linkActive, linkOn, portKind } from '../engine/network'
+import { mergeStatic } from './batch'
+import { AXIS_DIR, AxisGizmo, type Axis } from './gizmo'
+
+/** A port's spot for cable routing: where it is, what it's mounted on, and which rack. */
+type PortEnd = { pos: THREE.Vector3; station: Placement['station']; rack?: number }
+
+/** Material for clickable meshes drawn by a merged copy: never rendered, still raycast. */
+const HIT_BOX = new THREE.MeshBasicMaterial({ visible: false })
 import type { Device, Link, Topology } from '../engine/types'
 import { Hands } from './hands'
-import { BALCONY, BUILDING, collide, CUBE, freeSpot, isBlocked, DESK, PRINTER, MOUNT_GAP, MOUNT_TOP, panelHeight, roomColor, WALL_RACK, RACK, rackHasRoom, roomLayout, TRAY_Y, roomAt, type Cubicle, type Placement, type RackSpot, type Room, type RoomId, type RoomLayout, type Wall } from './layout'
+import { BALCONY, BUILDING, collide, switchPortSize, CUBE, freeSpot, isBlocked, DESK, PRINTER, MOUNT_GAP, MOUNT_TOP, panelHeight, roomColor, WALL_RACK, RACK, rackHasRoom, roomLayout, TRAY_Y, roomAt, type Cubicle, type Placement, type RackSpot, type Room, type RoomId, type RoomLayout, type Wall } from './layout'
 
 export type Target =
   | { kind: 'port'; deviceId: string; iface: string }
@@ -126,13 +134,16 @@ export class RoomScene {
   private cityKey = ''
   private ceiling = new THREE.Group()
   private overviewDown: { x: number; y: number } | null = null
+  /** Unity-style X/Y/Z gizmo in the top-right corner. */
+  private gizmo = new AxisGizmo()
+  private overGizmo = false
   private lastOverviewHint: string | null = null
   private world = new THREE.Group()
   private layout: RoomLayout = { placements: [], racks: [], cubicles: [], rooms: [], walls: [], seats: [], corridor: { minX: 0, maxX: 1, minZ: 0, maxZ: 1 }, obstacles: [], bounds: { minX: -4, maxX: 4, minZ: -4, maxZ: 4 }, spawn: { x: 0, z: 2 }, home: { x: 0, z: 2, look: [0, 1.2, -3] } }
   private topo: Topology = { devices: [], links: [] }
 
   private targets: THREE.Object3D[] = []
-  private ports = new Map<string, { pos: THREE.Vector3; station: Placement['station'] }>()
+  private ports = new Map<string, PortEnd>()
   private curves = new Map<string, THREE.CatmullRomCurve3>()
   private cableMeshes = new Map<string, THREE.Mesh>()
   /** Where Wi-Fi links start and end: AP antennas, laptop lids. */
@@ -262,6 +273,8 @@ export class RoomScene {
     const core = { ...b, maxZ: this.layout.corridor.maxZ + BUILDING.wallT / 2 }
     const openings = this.layout.rooms.filter((r) => r.kind === 'balcony').map((r) => ({ x0: r.doorX - BALCONY.door / 2, x1: r.doorX + BALCONY.door / 2 }))
     this.city = buildCity({ building: core, height: WALL_H, entrance: { x: b.minX, z: this.layout.corridor.maxZ / 2 }, southOpenings: openings, extraZ: b.maxZ - core.maxZ })
+    // The city never changes: one draw call per look.
+    mergeStatic(this.city, undefined, { textured: true })
     this.scene.add(this.city)
     this.cityKey = key
   }
@@ -422,6 +435,42 @@ export class RoomScene {
     go()
   }
 
+  /**
+   * Gizmo click. Walking: face along that axis (X or Z turns you, Y looks up or down).
+   * Overview: swing round to look along X or Z, or straight down for Y.
+   */
+  lookAlong(axis: Axis) {
+    const dir = AXIS_DIR[axis]
+    if (this.mode === 'walk') {
+      if (dir.y !== 0) this.player.pitch = dir.y > 0 ? PITCH_RANGE.max : PITCH_RANGE.min
+      else {
+        this.turnTo(Math.atan2(-dir.x, -dir.z))
+        this.player.pitch = 0
+      }
+      return
+    }
+    if (this.mode !== 'overview') return
+    const target = this.orbit.target
+    const offset = this.camera.position.clone().sub(target)
+    const dist = offset.length()
+    if (dir.y !== 0) {
+      // Top-down (the overview can't look up from under the ground).
+      this.camera.position.set(target.x, target.y + dist, target.z + 0.01)
+    } else {
+      const height = Math.max(offset.y, dist * 0.35)
+      const flat = Math.sqrt(Math.max(dist * dist - height * height, 1))
+      this.camera.position.set(target.x - dir.x * flat, target.y + height, target.z - dir.z * flat)
+    }
+    this.camera.lookAt(target)
+    this.orbit.update()
+  }
+
+  /** Where the camera is, in scene units (metres): x east, y up, z south. */
+  viewPosition(): { x: number; y: number; z: number } {
+    const p = this.camera.position
+    return { x: p.x, y: p.y, z: p.z }
+  }
+
   /** Swing round smoothly to face this heading (0 = north). */
   turnTo(heading: number) {
     // Shortest way round.
@@ -523,6 +572,7 @@ export class RoomScene {
       else this.buildDesk(d, p)
     }
     topo.links.forEach((l, i) => (l.wifi ? this.buildWifi(l.id) : this.buildCable(l.id, i)))
+    this.batch()
     if (this.carryFrom && !this.ports.has(this.carryFrom)) this.setCarry(null)
 
     if (!this.placed) {
@@ -539,6 +589,49 @@ export class RoomScene {
     this.applyHighlights()
     this.hover = null
     this.hoverBox.visible = false
+  }
+
+  /**
+   * Merges everything that doesn't change until the next rebuild (walls, desks,
+   * chairs, LEDs, people…) into a few meshes. Clickable things (ports, devices,
+   * cables), swinging rack doors, highlighted chassis and the ceiling (hidden in
+   * the overview) stay separate.
+   */
+  private batch() {
+    const lit = new Set<THREE.Material>(this.chassis.values())
+    const doors = new Set<THREE.Object3D>(this.doors.values())
+    const inDoor = (o: THREE.Object3D) => {
+      for (let p: THREE.Object3D | null = o; p; p = p.parent) if (doors.has(p)) return true
+      return false
+    }
+    // Clickable parts (ports, device bodies) are drawn by merged copies; the originals
+    // stay in place, hidden, as hit boxes (raycasting ignores visibility).
+    this.world.updateMatrixWorld(true)
+    const toWorld = this.world.matrixWorld.clone().invert()
+    const twins = new THREE.Group()
+    twins.name = 'twins'
+    const cables = new Set<THREE.Object3D>(this.cableMeshes.values())
+    for (const t of this.targets) {
+      if (cables.has(t) || inDoor(t)) continue
+      t.traverse((o) => {
+        const mesh = o as THREE.Mesh
+        if (!mesh.isMesh || !mesh.visible || Array.isArray(mesh.material) || mesh.material === HIT_BOX) return
+        const mat = mesh.material as THREE.MeshStandardMaterial
+        if (lit.has(mat) || mat.transparent || mat.map) return
+        const twin = new THREE.Mesh(mesh.geometry, mat)
+        twin.matrixAutoUpdate = false
+        twin.matrix.multiplyMatrices(toWorld, mesh.matrixWorld)
+        twins.add(twin)
+        // Not drawn (its children still are), but still hit by clicks and hover.
+        mesh.material = HIT_BOX
+      })
+    }
+    this.world.add(twins)
+    const targets = new Set<THREE.Object3D>([...this.targets, ...this.rackBodies, ...this.doors.values(), ...this.cableMeshes.values()])
+    const keep = (o: THREE.Object3D) => targets.has(o) || o === this.ceiling || lit.has((o as THREE.Mesh).material as THREE.Material)
+    mergeStatic(this.world, keep)
+    // The ceiling on its own (it is shown and hidden as a whole).
+    mergeStatic(this.ceiling)
   }
 
   setFlash(flash: Record<string, 'ok' | 'err' | 'hit'>) {
@@ -624,6 +717,7 @@ export class RoomScene {
     this.controls.unlock()
     this.controls.dispose()
     this.orbit.dispose()
+    this.gizmo.dispose()
     window.removeEventListener('mousemove', this.onLookMove)
     window.removeEventListener('mouseup', this.onLookEnd)
     window.removeEventListener('keydown', this.onKeyDown)
@@ -657,6 +751,9 @@ export class RoomScene {
 
   private onCanvasMove = (e: MouseEvent) => {
     const r = this.renderer.domElement.getBoundingClientRect()
+    const canvas = this.renderer.domElement
+    this.overGizmo = !this.controls.isLocked && this.gizmo.contains(canvas, e.clientX, e.clientY)
+    this.gizmo.setHover(this.overGizmo ? this.gizmo.axisAt(canvas, e.clientX, e.clientY) : null)
     this.pointer = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1)
   }
 
@@ -675,6 +772,14 @@ export class RoomScene {
 
   private onMouseDown = (e: MouseEvent) => {
     if (this.mode === 'flying') return
+    // The axis gizmo takes clicks in its corner: an arrow turns the view that way.
+    if (!this.controls.isLocked && e.button === 0 && this.gizmo.contains(this.renderer.domElement, e.clientX, e.clientY)) {
+      const axis = this.gizmo.axisAt(this.renderer.domElement, e.clientX, e.clientY)
+      if (axis) this.lookAlong(axis)
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      return
+    }
     if (this.mode === 'overview') {
       if (e.button === 0) this.overviewDown = { x: e.clientX, y: e.clientY }
       return
@@ -872,6 +977,7 @@ export class RoomScene {
       this.renderer.clearDepth()
       this.renderer.render(this.hands.scene, this.camera)
     }
+    this.gizmo.render(this.renderer, this.camera)
   }
 
   /** First person: eyes above the player's feet, looking along heading and pitch. */
@@ -1036,6 +1142,11 @@ export class RoomScene {
     }
     if (this.drag) {
       if (this.hover) this.setHover(null, null)
+      return
+    }
+    if (this.overGizmo && !this.controls.isLocked) {
+      if (this.hover) this.setHover(null, null)
+      this.renderer.domElement.style.cursor = 'pointer'
       return
     }
     const fps = this.controls.isLocked
@@ -1819,6 +1930,8 @@ export class RoomScene {
         radio: { w: 0.03, h: 0.03, color: COLORS.socket, metal: 0 },
         virtual: { w: 0.03, h: 0.03, color: COLORS.socket, metal: 0 },
       }[kind]
+      // A 48-port switch packs its jacks tight, like the real thing.
+      if (d.type === 'switch') Object.assign(look, switchPortSize(s.iface, kind))
       // Patch panel: 48 small keystone jacks in front, white punch-down blocks on the rear side.
       if (d.type === 'patch') Object.assign(look, s.iface.endsWith('r') ? { w: 0.014, h: 0.012, color: 0xd8e4f0 } : { w: 0.014, h: 0.014 })
       const socket = new THREE.Mesh(
@@ -1827,13 +1940,28 @@ export class RoomScene {
       )
       socket.position.set(px, py, z + 0.002)
       g.add(this.target(socket, { kind: 'port', deviceId: d.id, iface: s.iface }))
-      this.ports.set(portKey(d.id, s.iface), { pos: new THREE.Vector3(px, py, z + 0.01), station: p.station })
+      this.ports.set(portKey(d.id, s.iface), { pos: new THREE.Vector3(px, py, z + 0.01), station: p.station, rack: p.rack })
 
       const link = linkOn(this.topo, d.id, s.iface)
+      if (kind === 'fiber') {
+        // Fiber ports stand out: an orange frame round the SFP cage, and an orange dust cap while unplugged.
+        const orange = new THREE.Color(CABLES.fiber.color)
+        const rim = d.type === 'switch' ? 0.005 : 0.01
+        const frame = new THREE.Mesh(new THREE.BoxGeometry(look.w + rim, look.h + rim, 0.008), new THREE.MeshStandardMaterial({ color: orange, emissive: orange, emissiveIntensity: 0.35, roughness: 0.5 }))
+        frame.position.set(px, py, z - 0.001)
+        g.add(frame)
+        if (!link) {
+          const cap = new THREE.Mesh(new THREE.BoxGeometry(look.w * 0.7, look.h * 0.6, 0.014), new THREE.MeshStandardMaterial({ color: orange, roughness: 0.6 }))
+          cap.position.set(px, py, z + 0.012)
+          g.add(cap)
+        }
+      }
       if (kind !== 'console') {
         const ledColor = iface.shutdown ? COLORS.ledShut : !link ? 0x20262f : linkActive(this.topo, link) ? COLORS.ledUp : COLORS.ledDown
-        const led = new THREE.Mesh(new THREE.BoxGeometry(0.008, 0.005, 0.004), new THREE.MeshBasicMaterial({ color: ledColor, toneMapped: false }))
-        led.position.set(px - 0.012, py + (look.h / 2 + 0.002) * (s.y < 0 && d.type === 'switch' ? -1 : 1), z + 0.003)
+        const sw = d.type === 'switch'
+        const led = new THREE.Mesh(new THREE.BoxGeometry(sw ? 0.005 : 0.008, sw ? 0.003 : 0.005, 0.004), new THREE.MeshBasicMaterial({ color: ledColor, toneMapped: false }))
+        // Switch LEDs sit centred above the top row and below the bottom row.
+        led.position.set(sw ? px : px - 0.012, py + (look.h / 2 + 0.002) * (s.y < 0 && sw ? -1 : 1), z + 0.003)
         g.add(led)
       }
 
@@ -1884,13 +2012,46 @@ export class RoomScene {
       if (e.station === 'wall') return [p, v(p.x, p.y, p.z + 0.06), v(p.x, p.y + 0.35, p.z), v(p.x, p.y + 0.35, p.z - 0.5), v(p.x, trayY, p.z - 0.9)]
       return [p, v(p.x, p.y, p.z + 0.1), v(p.x, p.y + 0.6, p.z + 0.12), v(p.x, trayY, p.z + 0.1)]
     }
-    const pts = this.deskRoute(l, a.pos, b.pos) ?? [...end(a), ...end(b).reverse()]
-    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal')
+    const inRack = this.rackRoute(a, b, index)
+    const pts = this.deskRoute(l, a.pos, b.pos) ?? inRack ?? [...end(a), ...end(b).reverse()]
+    // Patch cords inside a rack bend tighter, so they don't bow out past the rack's sides.
+    const curve = inRack ? new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.15) : new THREE.CatmullRomCurve3(pts, false, 'centripetal')
     this.curves.set(linkId, curve)
     const radius = l.cable === 'fiber' ? 0.0035 : l.cable === 'console' ? 0.0045 : 0.0055
     const mesh = new THREE.Mesh(new THREE.TubeGeometry(curve, 160, radius, 6), new THREE.MeshStandardMaterial({ color: COLORS.cable, roughness: 0.6 }))
     this.world.add(this.target(mesh, { kind: 'cable', linkId }))
     this.cableMeshes.set(linkId, mesh)
+  }
+
+  /**
+   * Both ends in the same rack: a short patch cord that stays inside the rack, in front
+   * of the panels (behind the glass door). Ports close in height get a short drooping
+   * cord; ports far apart run sideways to the vertical cable manager at the rack's
+   * right edge, along it, and back across.
+   */
+  private rackRoute(a: PortEnd, b: PortEnd, index: number): THREE.Vector3[] | null {
+    if (a.station !== 'rack' || b.station !== 'rack' || a.rack === undefined || a.rack !== b.rack) return null
+    const rack = this.layout.racks.find((r) => r.index === a.rack)
+    if (!rack) return null
+    const v = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z)
+    const pa = a.pos
+    const pb = b.pos
+    // A few lanes so neighbouring cords don't sit inside each other.
+    const lane = 0.028 + (index % 4) * 0.006
+    const za = pa.z + lane
+    const zb = pb.z + lane
+    // Close together (neighbouring ports or devices): a short drooping cord.
+    if (Math.abs(pa.y - pb.y) < 0.15 && Math.abs(pa.x - pb.x) < 0.14) {
+      const low = Math.min(pa.y, pb.y) - 0.025 - Math.abs(pa.x - pb.x) * 0.12
+      return [pa, v(pa.x, pa.y, za), v((pa.x + pb.x) / 2, low, (za + zb) / 2), v(pb.x, pb.y, zb), pb]
+    }
+    // Otherwise through the vertical cable manager on the nearer side of the rack.
+    const w = rack.kind === 'wall' ? WALL_RACK.w : RACK.w
+    const right = (pa.x + pb.x) / 2 >= rack.x
+    const inset = 0.06 + (index % 3) * 0.008
+    const side = right ? rack.x + w / 2 - inset : rack.x - w / 2 + inset
+    const step = pa.y > pb.y ? -0.015 : pa.y < pb.y ? 0.015 : 0
+    return [pa, v(pa.x, pa.y, za), v(side, pa.y + step, za), v(side, pb.y - step, zb), v(pb.x, pb.y, zb), pb]
   }
 
   /**
@@ -1982,28 +2143,35 @@ export class RoomScene {
       } else {
         g.textAlign = 'left'
         g.fillText(d.name, 30, H / 2 - 16)
-        g.font = `20px ${FONT}`
+        g.font = `${d.type === 'switch' ? 16 : 20}px ${FONT}`
         g.fillStyle = '#6b7a90'
-        g.fillText(({ router: 'NS-2911 router', switch: 'NS-2960 switch', firewall: 'NS-ASA firewall', server: 'NS-R740 server' } as Record<string, string>)[d.type] ?? '', 30, H / 2 + 20)
+        g.fillText(({ router: 'NS-2911 router', switch: 'NS-2960-48', firewall: 'NS-ASA firewall', server: 'NS-R740 server' } as Record<string, string>)[d.type] ?? '', 30, H / 2 + 20)
       }
       // Port labels.
       g.fillStyle = '#9fb0c4'
-      g.font = `bold 17px ${FONT}`
+      g.font = `bold ${d.type === 'switch' ? 11 : 17}px ${FONT}`
       g.textAlign = 'center'
       for (const s of p.ports) {
         const kind = portKind(d, s.iface)
-        const label = kind === 'console' ? 'CON' : kind === 'fiber' && d.type === 'switch' ? `G${s.iface.split('/')[1]}` : d.type === 'switch' ? s.iface.split('/')[1] : s.iface
+        const label = kind === 'console' ? 'CON' : d.type === 'switch' && s.iface.startsWith('g') ? `G${s.iface.split('/')[1]}` : d.type === 'switch' ? s.iface.split('/')[1] : s.iface
         g.fillStyle = kind === 'fiber' ? CABLES.fiber.color : kind === 'console' ? CABLES.console.color : '#9fb0c4'
-        if (kind === 'console') g.fillText(label, toX(s.x + 0.04), toY(s.y))
+        // A switch has its 48 ports right of the console port, so its label goes on the left.
+        if (kind === 'console') g.fillText(label, toX(s.x + (d.type === 'switch' ? -0.02 : 0.04)), toY(s.y))
         else {
-          const dy = d.type === 'switch' ? (s.y > 0 ? 0.03 : -0.03) : d.type === 'ap' ? 0.035 : 0.03
+          const dy = d.type === 'switch' ? (s.y > 0 ? 0.016 : -0.016) : d.type === 'ap' ? 0.035 : 0.03
           g.fillText(label, toX(s.x), toY(s.y + dy))
         }
       }
       // Port surrounds.
       g.strokeStyle = '#3a4352'
       g.lineWidth = 3
-      for (const s of p.ports) g.strokeRect(toX(s.x) - 0.022 * S, toY(s.y) - 0.018 * S, 0.044 * S, 0.036 * S)
+      for (const s of p.ports) {
+        const box = d.type === 'switch' ? switchPortSize(s.iface, portKind(d, s.iface)) : { w: 0.04, h: 0.032 }
+        const bw = (box.w + 0.004) * S
+        const bh = (box.h + 0.004) * S
+        g.lineWidth = d.type === 'switch' ? 2 : 3
+        g.strokeRect(toX(s.x) - bw / 2, toY(s.y) - bh / 2, bw, bh)
+      }
     })
   }
 

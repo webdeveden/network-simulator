@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { defineAsyncComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useWorkspace } from '../stores/workspace'
 import NetworkCanvas from './canvas/NetworkCanvas.vue'
-import RoomView from './room/RoomView.vue'
 import ConsoleWindow from './terminal/ConsoleWindow.vue'
 import PlacementDialog from './panels/PlacementDialog.vue'
+import PortPicker from './panels/PortPicker.vue'
 import { getDevice } from '../engine/network'
 import DeviceConfigPanel from './panels/DeviceConfigPanel.vue'
 import DevicePalette from './panels/DevicePalette.vue'
 import TerminalPane from './terminal/TerminalPane.vue'
+
+// The 3D building (and three.js) loads only when you first open the 3D view.
+const RoomView = defineAsyncComponent({
+  loader: () => import('./room/RoomView.vue'),
+  loadingComponent: { render: () => h('div', { class: 'grid h-full place-items-center text-xs text-dim' }, 'loading the 3D building…') },
+  delay: 150,
+})
 
 const ws = useWorkspace()
 const termOpen = ref(true)
@@ -101,6 +108,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
       </div>
     </div>
     <PlacementDialog />
+    <PortPicker />
   </div>
 </template>
 
