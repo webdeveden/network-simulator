@@ -9,6 +9,7 @@ import { buildCity } from './city'
 import { CABLES, getDevice, linkActive, linkOn, portKind } from '../engine/network'
 import { mergeStatic } from './batch'
 import { AXIS_DIR, AxisGizmo, type Axis } from './gizmo'
+import { animatePerson, buildPerson, type Person, type Pose as PersonPose } from './people'
 
 /** A port's spot for cable routing: where it is, what it's mounted on, and which rack. */
 type PortEnd = { pos: THREE.Vector3; station: Placement['station']; rack?: number }
@@ -136,6 +137,8 @@ export class RoomScene {
   private overviewDown: { x: number; y: number } | null = null
   /** Unity-style X/Y/Z gizmo in the top-right corner. */
   private gizmo = new AxisGizmo()
+  /** People whose head and hands move (see people.ts). */
+  private people: Person[] = []
   private overGizmo = false
   private lastOverviewHint: string | null = null
   private world = new THREE.Group()
@@ -551,6 +554,7 @@ export class RoomScene {
     this.chassis.clear()
     this.doors.clear()
     this.rackBodies = []
+    this.people = []
 
     this.buildRoom()
     this.ensureCity()
@@ -628,8 +632,13 @@ export class RoomScene {
     }
     this.world.add(twins)
     const targets = new Set<THREE.Object3D>([...this.targets, ...this.rackBodies, ...this.doors.values(), ...this.cableMeshes.values()])
-    const keep = (o: THREE.Object3D) => targets.has(o) || o === this.ceiling || lit.has((o as THREE.Mesh).material as THREE.Material)
+    const keep = (o: THREE.Object3D) => targets.has(o) || o === this.ceiling || !!o.userData.anim || lit.has((o as THREE.Mesh).material as THREE.Material)
     mergeStatic(this.world, keep)
+    // Moving parts of people (heads, hands): merged within each part, so they still move as one.
+    for (const p of this.people) {
+      mergeStatic(p.head)
+      mergeStatic(p.hands)
+    }
     // The ceiling on its own (it is shown and hidden as a whole).
     mergeStatic(this.ceiling)
   }
@@ -962,6 +971,8 @@ export class RoomScene {
     if (this.mode === 'walk') this.navigate(dt)
     if (this.mode === 'walk') this.updateCamera()
     this.animateDoors(dt)
+    const t = performance.now() / 1000
+    for (const p of this.people) animatePerson(p, t)
     this.pick()
     this.animateCarry()
     this.animatePacket()
@@ -1604,36 +1615,7 @@ export class RoomScene {
   }
 
   /** Someone standing at the railing, forearms on it, looking out at the city (some with a coffee). */
-  private buildStandingPerson(x: number, z: number, holdingPhone = false) {
-    const k = Math.floor(Math.abs(x * 5.1 + 3)) % 4
-    const shirt = new THREE.MeshStandardMaterial({ color: [0xe67e22, 0x2c3e50, 0xd35400, 0x27ae60][k], roughness: 0.8 })
-    const skin = new THREE.MeshStandardMaterial({ color: [0xc68642, 0x8d5524, 0xf1c27d, 0x6b4423][k], roughness: 0.8 })
-    const pants = new THREE.MeshStandardMaterial({ color: [0x22262e, 0x3b4a6b, 0x4a3a2a, 0x22262e][k], roughness: 0.8 })
-    const hair = new THREE.MeshStandardMaterial({ color: [0x2b2018, 0x0e0e0e, 0x8a5a2b, 0x3a2a1a][k], roughness: 0.9 })
-    const g = new THREE.Group()
-    const box = (w: number, h: number, d: number, m: THREE.Material, px: number, py: number, pz: number, rx = 0) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m)
-      mesh.position.set(px, py, pz)
-      mesh.rotation.x = rx
-      g.add(mesh)
-    }
-    box(0.14, 0.86, 0.16, pants, -0.09, 0.43, 0)
-    box(0.14, 0.86, 0.16, pants, 0.09, 0.43, 0)
-    box(0.4, 0.6, 0.22, shirt, 0, 1.17, 0.02, 0.08)
-    box(0.2, 0.24, 0.22, skin, 0, 1.6, 0.06)
-    box(0.22, 0.08, 0.24, hair, 0, 1.74, 0.05)
-    // Left forearm on the railing; the right hand either on the railing too or holding a phone up.
-    box(0.09, 0.09, 0.34, shirt, -0.2, 1.04, 0.18)
-    if (holdingPhone) {
-      box(0.09, 0.09, 0.3, shirt, 0.2, 1.12, 0.12, 0.6) // forearm raised towards the face
-      box(0.08, 0.09, 0.08, skin, 0.2, 1.2, 0.3) // hand
-    } else {
-      box(0.09, 0.09, 0.34, shirt, 0.2, 1.04, 0.18)
-      if (k % 2 === 0) box(0.06, 0.1, 0.06, new THREE.MeshStandardMaterial({ color: 0xf5f5f5 }), 0.2, 1.12, 0.34) // coffee cup
-    }
-    g.position.set(x, 0, z - 0.2)
-    this.world.add(g)
-  }
+
 
   private buildLoungeChair(x: number, z: number) {
     const chair = new THREE.MeshStandardMaterial({ color: 0x3a4658, roughness: 0.9 })
@@ -1651,12 +1633,20 @@ export class RoomScene {
    * A laptop or smartphone used by someone on the balcony: the person and the real
    * device (selectable, E opens its console, Wi-Fi arcs start from it).
    */
+  /** A person at (x, z), facing +z; their head and hands are animated each frame. */
+  private addPerson(pose: PersonPose, x: number, z: number, seed: number) {
+    const person = buildPerson(pose, seed)
+    person.group.position.set(x, 0, z)
+    this.world.add(person.group)
+    this.people.push(person)
+  }
+
   private buildHeld(d: Device, p: Placement) {
     const seat = this.layout.seats.find((s) => s.deviceId === d.id)
     if (!seat) return
     if (seat.pose === 'sit') {
       this.buildLoungeChair(seat.x, seat.z)
-      this.buildSittingPerson(seat.x, seat.z)
+      this.addPerson(d.type === 'laptop' ? 'sit-laptop' : 'sit-phone', seat.x, seat.z, seat.x * 13.7 + seat.z * 5.3)
       if (d.type === 'laptop') {
         // The laptop on their lap, screen towards them: build it facing +z, then turn it round.
         const lap = new THREE.Group()
@@ -1668,7 +1658,7 @@ export class RoomScene {
         this.radios.set(d.id, new THREE.Vector3(seat.x, 0.95, seat.z + 0.3))
       } else this.buildHeldPhone(d, new THREE.Vector3(seat.x + 0.1, 0.78, seat.z + 0.22))
     } else {
-      this.buildStandingPerson(seat.x, seat.z, true)
+      this.addPerson('stand-phone', seat.x, seat.z - 0.2, seat.x * 5.1 + 3)
       this.buildHeldPhone(d, new THREE.Vector3(seat.x + 0.2, 1.3, seat.z + 0.16))
     }
   }
@@ -1695,30 +1685,7 @@ export class RoomScene {
   }
 
   /** A person on a lounge chair, working on the laptop on their lap, looking out at the city. */
-  private buildSittingPerson(x: number, z: number) {
-    const k = Math.floor(Math.abs(x * 13.7 + z * 5.3) * 3) % 4
-    const shirt = new THREE.MeshStandardMaterial({ color: [0x2e86de, 0xc0392b, 0x16a085, 0x8e44ad][k], roughness: 0.8 })
-    const skin = new THREE.MeshStandardMaterial({ color: [0x8d5524, 0xc68642, 0xe0ac69, 0x5c3a21][k], roughness: 0.8 })
-    const dark = new THREE.MeshStandardMaterial({ color: 0x22262e, roughness: 0.8 })
-    const g = new THREE.Group()
-    const box = (w: number, h: number, d: number, m: THREE.Material, px: number, py: number, pz: number, rx = 0) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m)
-      mesh.position.set(px, py, pz)
-      mesh.rotation.x = rx
-      g.add(mesh)
-    }
-    // Seated person facing +z (the view): thighs forward, shins down, torso leaning back.
-    box(0.36, 0.14, 0.42, dark, 0, 0.5, 0.12)
-    box(0.34, 0.4, 0.13, dark, 0, 0.26, 0.36)
-    box(0.42, 0.52, 0.24, shirt, 0, 0.8, -0.14, -0.2)
-    box(0.2, 0.24, 0.22, skin, 0, 1.18, -0.2)
-    box(0.22, 0.07, 0.24, dark, 0, 1.31, -0.21) // hair
-    // Arms reaching to the laptop on the lap.
-    box(0.09, 0.09, 0.34, shirt, -0.24, 0.66, 0.06)
-    box(0.09, 0.09, 0.34, shirt, 0.24, 0.66, 0.06)
-    g.position.set(x, 0, z)
-    this.world.add(g)
-  }
+
 
   /** A printer on a low cabinet, paper tray in front. */
   private buildPrinter(d: Device, p: Placement) {

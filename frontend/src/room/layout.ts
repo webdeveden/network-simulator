@@ -485,6 +485,8 @@ export function roomLayout(topo: Topology): RoomLayout {
         continue
       }
       spot.deviceId = d.id
+      // Someone standing at the railing: you walk round them, not through them.
+      if (spot.pose === 'stand') obstacles.push({ minX: spot.x - 0.25, maxX: spot.x + 0.3, minZ: spot.z - 0.45, maxZ: spot.z + 0.05 })
       const p = PANEL[d.type]
       // Panel: the laptop on the person's lap, or the phone held in front of them.
       const panel =
