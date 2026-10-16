@@ -9,6 +9,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-netsim}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    # Reachable from this Mac only (DBeaver, psql), on its own port: 5432 is often taken by another project.
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5435}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-netsim}"]
       interval: 5s

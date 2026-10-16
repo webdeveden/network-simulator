@@ -1,4 +1,4 @@
-import { matchesSpec, networkOf, inSubnet } from './ip'
+import { inSubnet, isLoopback, matchesSpec, networkOf } from './ip'
 import { emptySimState, resolveL2, type SimState } from './l2'
 import { natIn, natOut } from './nat'
 import { DEVICE_CATALOG, getDevice, isHost, isRouterLike, isSvi } from './network'
@@ -199,6 +199,17 @@ export function sendPacket(
 ): PingResult {
   const src = getDevice(topo, srcId)
   if (!src) return { success: false, hops: [], message: 'Unknown source device' }
+  // 127.x.x.x is the device's own loopback: answered inside it, no cable, address or gateway needed.
+  if (isLoopback(dstIp)) {
+    if (isHost(src))
+      return {
+        success: true,
+        hops: [{ deviceId: src.id, deviceName: src.name, action: 'deliver', detail: `${dstIp} is the loopback address: ${src.name} answers itself, nothing goes on the network` }],
+        message: `Reply from ${dstIp}: ttl=64 (loopback)`,
+      }
+    const why = `127.0.0.0/8 is a computer's own loopback; ${src.name} doesn't answer on it (give a router a loopback with: interface loopback 0 → ip address 10.255.255.1 255.255.255.255)`
+    return { success: false, hops: [{ deviceId: src.id, deviceName: src.name, action: 'drop', detail: why }], message: `Destination unreachable: ${why}` }
+  }
   if (!speaksIp(src))
     return {
       success: false,

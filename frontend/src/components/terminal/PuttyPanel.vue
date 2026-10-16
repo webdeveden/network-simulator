@@ -14,7 +14,10 @@ const props = defineProps<{ deviceId: string }>()
 const emit = defineEmits<{ open: [command: string] }>()
 const ws = useWorkspace()
 
+/** The PC or laptop this PuTTY runs on. */
 const me = computed(() => getDevice(ws.topo, props.deviceId))
+// The form, like PuTTY's Session page: host, login name, connection type,
+// and which saved session is highlighted.
 const host = ref('')
 const user = ref('admin')
 const kind = ref<'ssh' | 'serial'>('ssh')
@@ -35,20 +38,31 @@ const sessions = computed(() => {
   return ws.topo.devices
     .filter(isIos)
     .map((d) => {
+      // Connect to the first real interface address. lo0 is skipped: on the ISP it is
+      // 8.8.8.8 ("the Internet"), which isn't the box you'd manage.
       const ip = d.ifaces.find((i) => i.ip && i.name !== 'lo0')?.ip
       if (!ip) return { id: d.id, name: d.name, ip: '', ready: false, why: 'no IP address yet' }
+      // A dry run of `ssh` up to the password prompt. A throwaway SimState keeps these
+      // checks from filling the real ARP and MAC tables just by opening this tab.
       const check = sshPreflight(ws.topo, emptySimState(), from, ip, true)
+      // Show the hint line ("↳ …") when there is one: it says what to fix, the error line only says it failed.
       const why = check.ok ? 'ready' : (check.lines.find((l) => l.text.trim().startsWith('↳'))?.text.replace(/^\s*↳\s*/, '') ?? check.lines[0]?.text ?? '')
       return { id: d.id, name: d.name, ip, ready: check.ok, why }
     })
 })
 
+/** Click on a saved session: fill the form with it (its IP, or its name if it has none yet). */
 function load(s: { id: string; name: string; ip: string }) {
   selected.value = s.id
   host.value = s.ip || s.name
   kind.value = 'ssh'
 }
 
+/**
+ * Open: hand the console the command a user would type. Serial is the PC's `console`
+ * command (the COM1 cable); SSH is `ssh user@host`, whose password prompt and errors
+ * then show in the Console tab like a real terminal.
+ */
 function open() {
   if (kind.value === 'serial') return emit('open', 'console')
   const h = host.value.trim()
@@ -61,6 +75,7 @@ function open() {
   <div class="flex h-full flex-col overflow-y-auto px-3 py-2 text-xs">
     <div class="mb-2 text-[10px] tracking-[0.2em] text-dim uppercase">// PuTTY · session from {{ me?.name }}</div>
 
+    <!-- Host and port. The port is fixed and only informative: 22 for SSH, COM1 for serial. -->
     <div class="grid grid-cols-[1fr_auto] gap-2">
       <label class="flex flex-col gap-0.5">
         <span class="text-[10px] text-dim">Host name (or IP address)</span>
@@ -72,6 +87,7 @@ function open() {
       </label>
     </div>
 
+    <!-- Connection type. Serial needs a console cable on COM1, so it's disabled without one. -->
     <div class="mt-2 flex items-center gap-4">
       <span class="text-[10px] text-dim">Connection type:</span>
       <label class="flex cursor-pointer items-center gap-1"><input v-model="kind" type="radio" value="ssh" /> SSH</label>
@@ -86,6 +102,7 @@ function open() {
       <input v-model="user" class="input w-40" @keydown.enter="open" />
     </label>
 
+    <!-- Saved sessions: green dot = SSH would reach a login prompt; amber = not yet (hover for why). -->
     <div class="mt-3 text-[10px] text-dim">Saved sessions</div>
     <div class="mt-1 max-h-44 min-h-16 overflow-y-auto border border-line">
       <button

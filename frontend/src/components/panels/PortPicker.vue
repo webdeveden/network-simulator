@@ -4,9 +4,11 @@
  * each end (and the cable), like walking up to the rack and choosing where to plug in.
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { CABLES, cableFor, copperFor, getDevice, isRadio, isVirtual, linkOn, peerOf, portKind, suggestPorts, type PortKind } from '../../engine/network'
-import type { CableChoice, CableType, Device } from '../../engine/types'
+import { CABLES, cableFor, getDevice, suggestPorts, type PortKind } from '../../engine/network'
+import type { CableChoice } from '../../engine/types'
 import { useWorkspace } from '../../stores/workspace'
+import { CABLE_CHOICES, cableVerdict, PORT_KIND } from './cabling'
+import PortGrid from './PortGrid.vue'
 
 const ws = useWorkspace()
 
@@ -14,46 +16,6 @@ const a = computed(() => (ws.pendingLink ? getDevice(ws.topo, ws.pendingLink.a) 
 const b = computed(() => (ws.pendingLink ? getDevice(ws.topo, ws.pendingLink.b) : undefined))
 const pickA = ref<string | undefined>()
 const pickB = ref<string | undefined>()
-
-const CHOICES: { id: CableChoice; label: string; color: string }[] = [
-  { id: 'auto', label: 'Auto', color: '#c9d6e8' },
-  ...(Object.entries(CABLES) as [Exclude<CableChoice, 'auto'>, (typeof CABLES)['straight']][]).map(([id, c]) => ({ id, label: c.label, color: c.color })),
-]
-
-const KIND: Record<PortKind, { label: string; color: string }> = {
-  copper: { label: 'copper RJ45', color: '#22d3ee' },
-  fiber: { label: 'fiber SFP', color: CABLES.fiber.color },
-  console: { label: 'console', color: CABLES.console.color },
-  radio: { label: 'radio', color: '#8892a6' },
-  virtual: { label: 'virtual', color: '#8892a6' },
-}
-
-interface Port {
-  name: string
-  kind: PortKind
-  used: string | null
-}
-
-function portsOf(d: Device | undefined): { group: string; ports: Port[] }[] {
-  if (!d) return []
-  const list: Port[] = d.ifaces
-    .filter((i) => !isVirtual(i.name) && !isRadio(i.name))
-    .map((i) => {
-      const l = linkOn(ws.topo, d.id, i.name)
-      const peer = l && peerOf(l, d.id, i.name)
-      return { name: i.name, kind: portKind(d, i.name), used: peer ? `${getDevice(ws.topo, peer.device)?.name ?? '?'} ${peer.iface}` : null }
-    })
-  if (d.type === 'patch')
-    return [
-      { group: 'front (patch cords to switches)', ports: list.filter((p) => !p.name.endsWith('r')) },
-      { group: 'rear (cable runs from the offices)', ports: list.filter((p) => p.name.endsWith('r')) },
-    ]
-  const order: PortKind[] = ['copper', 'fiber', 'console']
-  return order.map((k) => ({ group: KIND[k].label, ports: list.filter((p) => p.kind === k) })).filter((g) => g.ports.length)
-}
-
-const groupsA = computed(() => portsOf(a.value))
-const groupsB = computed(() => portsOf(b.value))
 
 function suggest() {
   if (!a.value || !b.value) return
@@ -70,19 +32,7 @@ function setCable(c: CableChoice) {
 }
 
 /** What would be laid, or why it can't be. */
-const verdict = computed((): { ok: boolean; text: string; warn?: string } => {
-  if (!a.value || !b.value) return { ok: false, text: '' }
-  if (!pickA.value || !pickB.value) return { ok: false, text: `Pick a free port on ${!pickA.value ? a.value.name : b.value.name}.` }
-  const got = cableFor(ws.cable, a.value, pickA.value, b.value, pickB.value)
-  // cableFor returns a cable type, or why the cable can't go there.
-  if (!(got in CABLES)) return { ok: false, text: got }
-  const r = got as CableType
-  const text = `${CABLES[r].label} cable, $${CABLES[r].cost}: ${a.value.name} ${pickA.value} ↔ ${b.value.name} ${pickB.value}`
-  const copper = r === 'straight' || r === 'crossover'
-  const needs = copper ? copperFor(a.value, b.value, pickA.value, pickB.value) : r
-  const warn = copper && needs !== r ? `These two ports need a ${CABLES[needs].label.toLowerCase()} cable: with ${CABLES[r].label.toLowerCase()} the link stays down.` : undefined
-  return { ok: true, text, warn }
-})
+const verdict = computed(() => (a.value && b.value ? cableVerdict(ws.cable, a.value, pickA.value, b.value, pickB.value) : { ok: false, text: '' }))
 
 function connect() {
   if (verdict.value.ok && pickA.value && pickB.value) ws.confirmLink(pickA.value, pickB.value)
@@ -99,8 +49,8 @@ onMounted(() => window.addEventListener('keydown', onKey))
 onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 
 const sides = computed(() => [
-  { dev: a.value, groups: groupsA.value, pick: pickA },
-  { dev: b.value, groups: groupsB.value, pick: pickB },
+  { dev: a.value, pick: pickA },
+  { dev: b.value, pick: pickB },
 ])
 </script>
 
@@ -112,7 +62,7 @@ const sides = computed(() => [
         <div class="mt-0.5 text-[10px] text-dim">Pick the port on each end, like choosing where to plug in at the rack.</div>
         <div class="mt-3 flex flex-wrap gap-1">
           <button
-            v-for="c in CHOICES"
+            v-for="c in CABLE_CHOICES"
             :key="c.id"
             class="border px-2 py-1 text-[10px]"
             :class="ws.cable === c.id ? 'border-neon bg-panel-2 text-text' : 'border-line text-dim hover:text-text'"
@@ -129,34 +79,14 @@ const sides = computed(() => [
             <span class="font-semibold text-text">{{ s.dev!.name }}</span>
             <span class="text-[10px] text-cyan">{{ s.pick.value ?? 'no port' }}</span>
           </div>
-          <div v-for="g in s.groups" :key="g.group" class="mb-2">
-            <div class="mb-1 text-[10px] uppercase tracking-wider text-dim">{{ g.group }}</div>
-            <div class="flex flex-wrap gap-1">
-              <button
-                v-for="p in g.ports"
-                :key="p.name"
-                :disabled="!!p.used"
-                :title="p.used ? `${p.name}: in use → ${p.used}` : `${p.name}: free (${KIND[p.kind].label})`"
-                class="min-w-[3.25rem] border px-1.5 py-1 text-[10px] leading-none"
-                :class="[
-                  p.used ? 'cursor-not-allowed opacity-35 line-through' : 'hover:bg-panel-2',
-                  s.pick.value === p.name ? 'bg-panel-2 text-text' : 'text-dim',
-                  p.kind === 'fiber' ? 'rounded-full' : '',
-                ]"
-                :style="{ borderColor: s.pick.value === p.name ? '#39ff88' : KIND[p.kind].color, boxShadow: s.pick.value === p.name ? '0 0 0 1px #39ff88' : undefined }"
-                @click="s.pick.value = p.name"
-              >
-                {{ p.name }}
-              </button>
-            </div>
-          </div>
+          <PortGrid :device="s.dev!" :picked="s.pick.value" @pick="(p) => (s.pick.value = p)" />
         </div>
       </div>
 
       <div class="border-t border-line p-4 pt-3">
         <div class="mb-2 flex flex-wrap gap-3 text-[10px] text-dim">
           <span v-for="k in ['copper', 'fiber', 'console'] as PortKind[]" :key="k">
-            <span class="mr-1 inline-block h-2.5 w-4 border align-middle" :class="k === 'fiber' ? 'rounded-full' : ''" :style="{ borderColor: KIND[k].color }" />{{ KIND[k].label }}
+            <span class="mr-1 inline-block h-2.5 w-4 border align-middle" :class="k === 'fiber' ? 'rounded-full' : ''" :style="{ borderColor: PORT_KIND[k].color }" />{{ PORT_KIND[k].label }}
           </span>
           <span><span class="mr-1 line-through opacity-50">fa0/1</span>in use</span>
         </div>

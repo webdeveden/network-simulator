@@ -54,8 +54,12 @@ const testing: Topic = {
     '`ping` sends an ICMP echo request and waits for the reply. It only succeeds if the path works in both directions.',
     '`traceroute` lists every router the packet crosses, so you can see where it stops.',
     'Before sending, a host needs the MAC address of the next hop. It asks with ARP ("who has 192.168.1.1?") and caches the answer: `arp -a` shows that cache.',
+    '`ping 127.0.0.1` (or `ping localhost`) tests the computer itself: 127.0.0.0/8 is its built-in loopback and never goes on the network. If that works but the gateway doesn\'t, the problem is the cable, the address or the network, not the PC.',
   ],
-  examples: [{ title: 'Check the path to your gateway', commands: ['ping 192.168.1.1', 'traceroute 192.168.1.1', 'arp -a'] }],
+  examples: [
+    { title: 'Check the path to your gateway', commands: ['ping 192.168.1.1', 'traceroute 192.168.1.1', 'arp -a'] },
+    { title: 'Test the PC itself first', commands: ['ping 127.0.0.1', 'ping localhost'] },
+  ],
 }
 
 const ports: Topic = {

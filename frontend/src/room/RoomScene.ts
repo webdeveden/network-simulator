@@ -47,6 +47,8 @@ export interface RoomEvents {
   use(t: Target | null): void
   /** Right click or Q. */
   cancel(): void
+  /** C: choose where the carried cable goes from a list instead of walking it there. */
+  choose?(): void
   /** A rack device is being dragged: where it would land (rack null = not over a rack). */
   dragging(d: RackDrag | null): void
   /** A dragged rack device was dropped at a valid spot. */
@@ -935,6 +937,7 @@ export class RoomScene {
       e.preventDefault()
       this.events.use(this.hover)
     } else if (k === 'q') this.events.cancel()
+    else if (k === 'c' && !e.repeat) this.events.choose?.()
     else if (k === 'r' && !e.repeat) this.resetView()
     else if (k === 'f' && !e.repeat) {
       if (this.controls.isLocked) this.controls.unlock()

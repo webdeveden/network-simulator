@@ -7,7 +7,7 @@
  */
 import { execute, type CommandResult, type Line } from './commands'
 import { hasSvi, routingTable, sendPacket, type SimState } from './forwarding'
-import { inSubnet, ipToInt, isValidIp, networkOf, prefixToMask } from './ip'
+import { inSubnet, ipToInt, isLoopback, isValidIp, networkOf, prefixToMask } from './ip'
 import {
   CAP,
   ciscoMac,
@@ -694,6 +694,7 @@ const SPECS: Spec[] = [
       const [ip, mask] = rest
       if (!ip || !mask) return fail('% Incomplete command.', 'ip address <ip> <subnet mask>, e.g. ip address 10.0.0.1 255.255.255.0')
       if (!isValidIp(ip)) return fail(`% Invalid IP address ${ip}`)
+      if (isLoopback(ip)) return fail(`Not a valid host address - ${ip}`, '127.0.0.0/8 is reserved for loopback. For a router loopback use a normal address: interface loopback 0 → ip address 10.255.255.1 255.255.255.255')
       if (/^\/?\d+$/.test(mask)) return fail('% Invalid input: IOS wants a dotted subnet mask.', `/${mask.replace('/', '')} is ${prefixToMask(Math.min(32, Number(mask.replace('/', ''))))}`)
       const prefix = maskToPrefix(mask)
       if (prefix === null) return fail(`% Bad mask ${mask}`)

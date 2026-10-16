@@ -52,6 +52,7 @@ export const HELP: [string, string][] = [
 
 function resolveTarget(topo: Topology, arg: string | undefined): string | null {
   if (!arg) return null
+  if (arg.toLowerCase() === 'localhost') return '127.0.0.1'
   if (isValidIp(arg)) return arg
   const d = getDevice(topo, arg)
   return d?.ifaces.find((i) => i.ip)?.ip ?? null
@@ -121,7 +122,10 @@ export function execute(
         lines.push(out(`    ether ${i.mac}`, 'muted'))
         if (i.ip) lines.push(out(`    inet ${i.ip}/${i.prefix}  netmask ${prefixToMask(i.prefix!)}${i.dhcp ? '  (DHCP)' : ''}`))
       }
-      if (isHost(dev)) lines.push(out(`default gateway: ${dev.gateway ?? '(none)'}`, 'info'))
+      if (isHost(dev)) {
+        lines.push(out('lo: UP  (loopback, always on)', 'ok'), out('    inet 127.0.0.1/8  netmask 255.0.0.0', 'muted'))
+        lines.push(out(`default gateway: ${dev.gateway ?? '(none)'}`, 'info'))
+      }
       return { lines }
     }
 

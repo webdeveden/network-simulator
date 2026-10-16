@@ -6,6 +6,7 @@ import type { Device, DeviceType } from '../../engine/types'
 import { onDesk, roomColor, roomLabel, roomLayout, roomOf, roomsOf, type RoomId } from '../../room/layout'
 import { RoomScene, type RackDrag, type Target } from '../../room/RoomScene'
 import { GIZMO_BOX } from '../../room/gizmo'
+import CableTargetDialog from './CableTargetDialog.vue'
 import { STEP_MS, useWorkspace } from '../../stores/workspace'
 
 const ws = useWorkspace()
@@ -13,6 +14,20 @@ const el = ref<HTMLDivElement>()
 const locked = ref(false)
 const hover = ref<Target | null>(null)
 const carry = ref<{ deviceId: string; iface: string } | null>(null)
+/** The "choose where this cable goes" dialog is open. */
+const choosing = ref(false)
+function openChooser() {
+  if (!carry.value) return
+  // The dialog needs the mouse: leave FPS mode.
+  scene?.unlock()
+  choosing.value = true
+}
+function onChosen(to: { deviceId: string; iface: string }) {
+  const from = carry.value
+  choosing.value = false
+  if (from) ws.notify(`Plugged ${port(from.deviceId, from.iface)} ↔ ${port(to.deviceId, to.iface)}`)
+  setCarry(null)
+}
 const drag = ref<RackDrag | null>(null)
 const whereAmI = ref('')
 /** Camera position under the axis gizmo (x east, y up, z south), refreshed a few times a second. */
@@ -232,6 +247,7 @@ onMounted(() => {
     primary,
     use,
     cancel: () => setCarry(null),
+    choose: openChooser,
     dragging: (d) => (drag.value = d),
     move: (id, rack, index) => {
       const err = ws.moveInRack(id, rack, index)
@@ -305,10 +321,13 @@ watch(
 
     <div
       v-if="carry"
-      class="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 border border-neon bg-panel/90 px-3 py-1.5 text-xs text-neon"
+      class="absolute top-3 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2 border border-neon bg-panel/90 px-3 py-1.5 text-xs text-neon"
     >
-      Holding {{ aCable }} from {{ port(carry.deviceId, carry.iface) }} · click a free port to plug it in · Q / right-click to drop
+      <span>Holding {{ aCable }} from {{ port(carry.deviceId, carry.iface) }} · run it to a free port and click, or</span>
+      <button class="btn btn-primary px-2 py-0.5 text-[11px]" @click="openChooser">Choose where… (C)</button>
+      <span class="text-dim">· Q drops it</span>
     </div>
+    <CableTargetDialog v-if="choosing && carry" :from="carry" @close="choosing = false" @done="onChosen" />
 
     <!-- position under the X/Y/Z gizmo (drawn by the scene in the top-right corner) -->
     <div

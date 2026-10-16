@@ -1,3 +1,6 @@
+/** 127.0.0.0/8: every computer's own loopback ("localhost"). Never sent on the network. */
+export const isLoopback = (ip: string) => ip.split('.')[0] === '127'
+
 export function isValidIp(ip: string): boolean {
   const parts = ip.split('.')
   return (

@@ -50,3 +50,26 @@ describe('media type in the IOS console', () => {
     expect(status).toMatch(/Gi0\/3\s+notconnect\s+1\s+auto\s+auto\s+10\/100\/1000BaseTX/)
   })
 })
+
+describe('loopback (127.0.0.1 / localhost)', () => {
+  it('a PC answers itself with no cable, address or gateway', () => {
+    const t = emptyTopology()
+    const pc = addDevice(t, 'pc')
+    const s = newSession(pc.id)
+    const run = (l: string) => runLine(t, emptySimState(), s, l).lines.map((x) => x.text).join('\n')
+    expect(run('ping 127.0.0.1')).toMatch(/Reply from 127\.0\.0\.1.*loopback/)
+    expect(run('ping localhost')).toMatch(/Reply from 127\.0\.0\.1/)
+    expect(run('ping 127.5.5.5')).toMatch(/Reply from 127\.5\.5\.5/)
+    expect(run('ifconfig')).toMatch(/lo: UP[\s\S]*inet 127\.0\.0\.1\/8/)
+    expect(run('ip set 127.0.0.2/8')).toMatch(/loopback range/)
+  })
+
+  it('a router does not answer on 127.x and refuses it as an interface address', () => {
+    const t = emptyTopology()
+    const r = addDevice(t, 'router')
+    const s = newSession(r.id)
+    const run = (l: string) => runLine(t, emptySimState(), s, l).lines.map((x) => x.text).join('\n')
+    expect(run('ping 127.0.0.1')).toMatch(/\.\.\.\.\.[\s\S]*interface loopback 0/)
+    expect(run('enable') + run('configure terminal') + run('interface g0/0') + run('ip address 127.0.0.1 255.0.0.0')).toMatch(/Not a valid host address - 127\.0\.0\.1/)
+  })
+})

@@ -1,4 +1,4 @@
-import { parseCidr } from './ip'
+import { isLoopback, parseCidr } from './ip'
 import type { CableChoice, CableType, Device, DeviceType, Iface, Link, LinkEnd, Topology } from './types'
 
 export interface DeviceInfo {
@@ -555,6 +555,7 @@ export function setIfaceIp(device: Device, ifaceName: string, cidr: string): str
   }
   const c = parseCidr(cidr, -1)
   if (!c || c.prefix < 0) return `Invalid address "${cidr}": use CIDR notation like 192.168.1.10/24`
+  if (isLoopback(c.ip)) return `${c.ip} is in 127.0.0.0/8, the loopback range: every device already has it built in (localhost). Use a normal address like 192.168.1.10/24`
   iface.ip = c.ip
   iface.prefix = c.prefix
   return null
