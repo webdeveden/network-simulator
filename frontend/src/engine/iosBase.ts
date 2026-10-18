@@ -9,7 +9,7 @@ import { DEVICE_CATALOG, isConsolePort, isRadio } from './network'
 import { ipToInt, isValidIp, maskInt } from './ip'
 import type { Device, DeviceType, Iface, IosConfig, IosSecret, Topology, WlanConfig } from './types'
 
-export type Mode = 'user' | 'priv' | 'config' | 'if' | 'line' | 'ssid' | 'router' | 'vlan' | 'dhcp'
+export type Mode = 'user' | 'priv' | 'config' | 'if' | 'line' | 'ssid' | 'router' | 'vlan' | 'dhcp' | 'nacl-std' | 'nacl-ext'
 
 export interface Frame {
   deviceId: string
@@ -25,6 +25,8 @@ export interface Frame {
   vlan?: number
   /** `ip dhcp pool NAME` being edited. */
   pool?: string
+  /** `ip access-list standard|extended NAME` being edited. */
+  acl?: string
   /** Set when this frame was opened from another device (SSH, or a console cable when `serial`); `exit` closes it. */
   remote?: { user: string; ip: string; serial?: boolean }
 }
@@ -152,4 +154,3 @@ export function showSecret(sec: IosSecret, encrypt: boolean): string {
   if (sec.kind === 'secret') return `secret 5 $1$${fakeHash(sec.value, 4, 7)}$${fakeHash(sec.value, 22, 99)}`
   return encrypt ? `password 7 ${type7(sec.value)}` : `password ${sec.value}`
 }
-

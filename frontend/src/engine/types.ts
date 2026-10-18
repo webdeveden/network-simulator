@@ -18,16 +18,36 @@ export interface Iface {
   nativeVlan?: boolean
   /** Switch port settings. Missing = access port in VLAN 1. */
   switchport?: Switchport
+  /** Shut down by the switch itself (port security, BPDU guard) until `shutdown` / `no shutdown`. */
+  errDisabled?: 'psecure-violation' | 'bpduguard'
+  /** Per-port spanning-tree settings on a switch. */
+  stp?: { portfast?: boolean; bpduguard?: boolean; cost?: number }
   /** `ip helper-address`: relay DHCP broadcasts to this server. */
   helper?: string
   /** `ip nat inside` / `ip nat outside`. */
   nat?: 'inside' | 'outside'
   /** `ip ospf cost N`. */
   ospfCost?: number
+  /** `ip access-group <acl> in|out`. */
+  aclIn?: string
+  aclOut?: string
+}
+
+/** `switchport port-security …` on an access port. */
+export interface PortSecurity {
+  /** Most MACs allowed on the port (default 1). */
+  max?: number
+  /** What happens to a frame from one MAC too many (default shutdown = err-disabled). */
+  violation?: 'shutdown' | 'restrict' | 'protect'
+  /** `mac-address sticky`: learned MACs are written into the running-config. */
+  sticky?: boolean
+  /** Secure MACs in the config: typed by hand, or learned while sticky. */
+  macs: { mac: string; sticky?: boolean }[]
 }
 
 export interface Switchport {
   mode: 'access' | 'trunk'
+  portSecurity?: PortSecurity
   /** Access VLAN (default 1). */
   vlan?: number
   /** Trunk: VLANs allowed (missing = all). */
@@ -39,7 +59,12 @@ export interface Switchport {
 export interface Route {
   network: string
   prefix: number
+  /** Next-hop address; '' for a route through an exit interface only. */
   via: string
+  /** Exit interface (`ip route … g0/1`). Without a next hop, the router ARPs for each destination. */
+  iface?: string
+  /** Administrative distance (default 1). Higher = floating static route, a backup. */
+  ad?: number
 }
 
 export type Proto = 'any' | 'icmp' | 'tcp' | 'udp'
@@ -102,20 +127,24 @@ export interface IosConfig {
   banner?: string
   passwordEncryption?: boolean
   /** Defaults match IOS: `login` with no password, transport input all. */
-  vty?: { login?: VtyLogin; password?: string; transport?: VtyTransport }
+  vty?: { login?: VtyLogin; password?: string; transport?: VtyTransport; /** `access-class N in`: who may SSH in. */ accessClass?: string }
   /** Saved by `write memory`. */
   startup?: string
   /** Access point wireless settings. */
   wlan?: WlanConfig
   /** Switch VLAN database: id -> name. VLAN 1 always exists. */
   vlans?: Record<number, string>
+  /** Spanning tree: mode (both converge instantly in NetSim) and bridge priority per VLAN. */
+  stp?: { mode?: 'pvst' | 'rapid-pvst'; priority?: Record<number, number> }
   ospf?: OspfConfig
   eigrp?: EigrpConfig
   rip?: RipConfig
   bgp?: BgpConfig
   dhcp?: DhcpServer
-  /** Numbered standard access lists (used by NAT). */
-  acls?: Record<number, AclEntry[]>
+  /** Access lists by number ("1", "110") or name ("BLOCK-SSH"). */
+  acls?: Record<string, AclEntry[]>
+  /** Named lists: standard or extended (numbered ones go by their number range). */
+  aclTypes?: Record<string, 'standard' | 'extended'>
   nat?: NatConfig
 }
 
@@ -185,16 +214,33 @@ export interface DhcpServer {
   leases: DhcpLease[]
 }
 
+export type AclProto = 'ip' | 'icmp' | 'tcp' | 'udp'
+
+/** One access-list line. Standard lines use only action/src/wildcard; extended lines add the rest. */
 export interface AclEntry {
   action: 'permit' | 'deny'
-  /** 'any' or an address. */
+  /** 'any' or an address (a host without a wildcard). */
   src: string
   wildcard?: string
+  /** Extended: protocol (ip = any). */
+  proto?: AclProto
+  dst?: string
+  dstWildcard?: string
+  /** Extended: `eq` destination port. */
+  port?: number
+  /** Extended: `eq` source port. */
+  srcPort?: number
+  /** Extended TCP: only replies in an existing session. */
+  established?: boolean
+  /** A `remark` line: a comment, never matches. */
+  remark?: string
+  /** Sequence number when entered with one (named lists); else 10, 20, 30… */
+  seq?: number
 }
 
 export interface NatConfig {
   /** `ip nat inside source list N interface X overload` */
-  overload?: { acl: number; iface: string }
+  overload?: { acl: number | string; iface: string }
   /** `ip nat inside source static <local> <global>` */
   statics: { local: string; global: string }[]
 }
@@ -289,4 +335,6 @@ export interface PingResult {
   success: boolean
   hops: Hop[]
   message: string
+  /** Source address the destination saw (after NAT). */
+  srcIp?: string
 }

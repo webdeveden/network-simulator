@@ -3,6 +3,7 @@
  * actual configuration, e.g. which subnet its address is in.
  */
 import { routingTable } from '../engine/forwarding'
+import { staticEgress } from '../engine/routing'
 import { inSubnet, intToIp, ipToInt, maskInt, networkOf, prefixToMask } from '../engine/ip'
 import { cableProblem, DEVICE_CATALOG, isHost, linkActive, linkOn, linksOn, netIfaces } from '../engine/network'
 import { isIos } from '../engine/ios'
@@ -82,8 +83,9 @@ export function deviceFacts(topo: Topology, d: Device): Fact[] {
     if (!d.ifaces.some((i) => i.ip)) facts.push({ label: 'interfaces', value: 'no addresses yet', tone: 'warn' })
     const table = routingTable(topo, d)
     const statics = table.filter((r) => r.kind === 'static').length
+    const inactive = d.routes.filter((r) => !staticEgress(d, r)).length
     const learned = table.filter((r) => r.kind !== 'connected' && r.kind !== 'static' && r.kind !== 'dhcp').length
-    facts.push({ label: 'routes', value: `${table.filter((r) => r.kind === 'connected').length} connected, ${statics} static${learned ? `, ${learned} learned` : ''}${d.routes.length > statics ? `, ${d.routes.length - statics} inactive` : ''}` })
+    facts.push({ label: 'routes', value: `${table.filter((r) => r.kind === 'connected').length} connected, ${statics} static${learned ? `, ${learned} learned` : ''}${inactive ? `, ${inactive} inactive` : ''}` })
   }
 
   if (d.type === 'firewall') facts.push({ label: 'policy', value: `${d.fwRules.length} rule${d.fwRules.length === 1 ? '' : 's'}, default ${d.fwDefault}`, tone: d.fwDefault === 'deny' ? 'ok' : 'warn' })

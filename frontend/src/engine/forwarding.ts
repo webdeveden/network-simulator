@@ -1,5 +1,7 @@
 import { inSubnet, isLoopback, matchesSpec, networkOf } from './ip'
-import { emptySimState, resolveL2, type SimState } from './l2'
+import { emptySimState, resolveL2, type L2Hit, type SimState } from './l2'
+import { aclCheck, type AclPacket } from './acl'
+import { aclDropText } from './iosAcl'
 import { natIn, natOut } from './nat'
 import { DEVICE_CATALOG, getDevice, isHost, isRouterLike, isSvi } from './network'
 import { configured, lookup, routingTable as table, type L3Iface, type RouteCandidate } from './routing'
@@ -20,6 +22,8 @@ interface Egress {
   iface: L3Iface
   nextHop: string
   detail: string
+  /** Static route through an exit interface: ARP for the destination itself, a router may answer (proxy ARP). */
+  proxy?: boolean
 }
 
 /** The routing table (`show ip route`). */
@@ -47,6 +51,8 @@ function chooseEgress(topo: Topology, d: Device, dstIp: string): Egress | string
 
   const best = lookup(topo, d, dstIp)
   if (!best) return `No route to ${dstIp} on ${d.name}`
+  if (best.kind === 'static' && best.nextHop === '-')
+    return { iface: best.iface, nextHop: dstIp, proxy: true, detail: `static route ${best.network}/${best.prefix} out of ${best.iface.name} (ARP for ${dstIp}, proxy ARP)` }
   const via: Record<string, string> = { ospf: 'OSPF', 'ospf-ia': 'OSPF inter-area', 'ospf-e2': 'OSPF external', eigrp: 'EIGRP', rip: 'RIP', ebgp: 'eBGP', ibgp: 'iBGP', static: 'static route', dhcp: 'DHCP default route' }
   return {
     iface: best.iface,
@@ -115,6 +121,15 @@ function forwardLeg(
   let inIface: Iface | undefined
   let ttl = MAX_TTL
   let srcIp = srcIpIn
+  // What access lists look at. The service port is the destination on the way there and
+  // the source on the way back; replies are "established" TCP.
+  const packet = (s: string, d: string): AclPacket => ({
+    src: s,
+    dst: d,
+    proto: proto === 'any' ? 'icmp' : proto,
+    ...(reply ? { srcPort: port } : { dstPort: port }),
+    reply,
+  })
 
   for (;;) {
     const egress = chooseEgress(topo, cur, dstIp)
@@ -133,9 +148,28 @@ function forwardLeg(
         hops[hops.length - 1].detail += ` — NAT: source ${srcIp} → ${translated}`
         srcIp = translated
       }
+      // Outbound access list, after NAT (IOS order). Traffic the router sends itself isn't filtered.
+      const out = egress.iface.aclOut
+      if (out) {
+        const v = aclCheck(cur, out, packet(srcIp, dstIp), ((state.aclHits ??= {})[cur.id] ??= {}))
+        if (!v.permit) {
+          const why = aclDropText(cur, out, 'out', egress.iface.name, v)
+          hop(cur, 'drop', why)
+          return { ok: false, reason: why, srcIp, ttl }
+        }
+      }
     }
 
-    const l2 = resolveL2(topo, state, cur, egress.iface, egress.nextHop)
+    // Proxy ARP: a router on that link answers for the destination if it has a route to it
+    // through another interface (IOS has proxy ARP on by default).
+    const proxy = egress.proxy
+      ? (h: L2Hit) => {
+          if (!isRouterLike(h.device) || !h.iface.ip) return false
+          const r = lookup(topo, h.device, egress.nextHop)
+          return !!r && r.iface.name !== h.iface.name
+        }
+      : undefined
+    const l2 = resolveL2(topo, state, cur, egress.iface, egress.nextHop, proxy)
     if (typeof l2 === 'string') {
       hop(cur, 'drop', l2)
       return { ok: false, reason: l2, srcIp, ttl }
@@ -146,6 +180,17 @@ function forwardLeg(
     }
     const arriveLink = l2.path[l2.path.length - 1].linkId
     const next = l2.device
+
+    // Inbound access list on the interface the packet arrived on, before NAT translates it back.
+    if (isRouterLike(next) && l2.iface.aclIn) {
+      const name = l2.iface.aclIn
+      const v = aclCheck(next, name, packet(srcIp, dstIp), ((state.aclHits ??= {})[next.id] ??= {}))
+      if (!v.permit) {
+        const why = aclDropText(next, name, 'in', l2.iface.name, v)
+        hop(next, 'drop', why, arriveLink)
+        return { ok: false, reason: why, srcIp, ttl }
+      }
+    }
 
     // Outside -> inside: a reply to a translated flow, or a static NAT mapping.
     let natNote = ''
@@ -220,7 +265,7 @@ export function sendPacket(
   const hops: Hop[] = []
   const req = forwardLeg(topo, state, src, dstIp, proto, port, false, hops)
   if (!req.ok) {
-    return { success: false, hops, message: `Destination unreachable: ${req.reason}` }
+    return { success: false, hops, message: `Destination unreachable: ${req.reason}`, srcIp: req.srcIp }
   }
   if (req.target === src) return { success: true, hops, message: `Reply from ${dstIp}: ttl=${MAX_TTL}` }
 
@@ -228,9 +273,9 @@ export function sendPacket(
   const replyFrom = req.target!.ifaces.find((i) => i.ip === dstIp)?.ip ?? req.target!.ifaces.find((i) => i.ip)!.ip!
   const rep = forwardLeg(topo, state, req.target!, req.srcIp!, proto, port, true, hops, replyFrom)
   if (!rep.ok) {
-    return { success: false, hops, message: `Request timed out: reply from ${dstIp} was lost — ${rep.reason}` }
+    return { success: false, hops, message: `Request timed out: reply from ${dstIp} was lost — ${rep.reason}`, srcIp: req.srcIp }
   }
-  return { success: true, hops, message: `Reply from ${dstIp}: ttl=${rep.ttl}` }
+  return { success: true, hops, message: `Reply from ${dstIp}: ttl=${rep.ttl}`, srcIp: req.srcIp }
 }
 
 export function ping(topo: Topology, state: SimState, srcId: string, dstIp: string): PingResult {

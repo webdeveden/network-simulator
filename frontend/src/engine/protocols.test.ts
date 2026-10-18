@@ -320,3 +320,63 @@ describe('NAT', () => {
     expect(t.cfg('R1', 'access-list 1 permit 192.168.1.0 255.255.255.0')).toMatch(/ACLs use wildcards: 0\.0\.0\.255/)
   })
 })
+
+describe('routing console details', () => {
+  it('elects the DR by numeric router ID (10.0.0.10 beats 10.0.0.9)', () => {
+    const t = chain()
+    t.cfg('R1', 'router ospf 1', 'router-id 10.0.0.9', 'network 10.0.0.0 0.255.255.255 area 0')
+    t.cfg('R2', 'router ospf 1', 'router-id 10.0.0.10', 'network 10.0.0.0 0.255.255.255 area 0')
+    expect(t.on('R1', 'show ip ospf neighbor')).toMatch(/10\.0\.0\.10\s+1\s+FULL\/DR/)
+    expect(t.on('R2', 'show ip ospf neighbor')).toMatch(/10\.0\.0\.9\s+1\s+FULL\/BDR/)
+  })
+
+  it('accepts any interface spelling in passive-interface', () => {
+    const t = chain()
+    for (const name of ['gi0/0', 'GigabitEthernet0/0', 'GigabitEthernet 0/0']) {
+      expect(t.cfg('R1', 'router ospf 1', 'network 10.0.0.0 0.255.255.255 area 0', `passive-interface ${name}`)).not.toMatch(/Invalid interface/)
+      expect(t.dev('R1').ios?.ospf?.passive).toEqual(['g0/0'])
+    }
+  })
+
+  it('BGP network does not warn about a prefix the router learned from OSPF', () => {
+    const t = chain()
+    for (const r of ['R1', 'R2', 'R3']) t.cfg(r, 'router ospf 1', 'network 10.0.0.0 0.255.255.255 area 0')
+    // R1 learns 10.3.0.0/24 (R3's LAN) through OSPF.
+    expect(t.cfg('R1', 'router bgp 65001', 'network 10.3.0.0 mask 255.255.255.0')).not.toMatch(/only advertises/)
+    expect(t.cfg('R1', 'router bgp 65001', 'network 10.99.0.0 mask 255.255.255.0')).toMatch(/only advertises/)
+  })
+})
+describe('static routes like IOS', () => {
+  it('routes through an exit interface with proxy ARP', () => {
+    const t = chain()
+    t.cfg('R1', 'ip route 10.3.0.0 255.255.255.0 g0/1', 'ip route 10.23.0.0 255.255.255.252 GigabitEthernet 0/1')
+    t.cfg('R2', 'ip route 10.3.0.0 255.255.255.0 10.23.0.2', 'ip route 10.1.0.0 255.255.255.0 10.12.0.1')
+    t.cfg('R3', 'ip route 10.1.0.0 255.255.255.0 10.23.0.1', 'ip route 10.12.0.0 255.255.255.252 10.23.0.1')
+    expect(t.on('R1', 'show ip route')).toMatch(/S\s+10\.3\.0\.0\/24 is directly connected, GigabitEthernet0\/1/)
+    const r = t.reach('PC1', '10.3.0.10')
+    expect(r.message).toMatch(/Reply/)
+    expect(r.hops.some((h) => /proxy ARP/.test(h.detail))).toBe(true)
+    expect(t.on('R1', 'enable', 'show running-config')).toMatch(/ip route 10\.3\.0\.0 255\.255\.255\.0 GigabitEthernet0\/1/)
+  })
+
+  it('a floating static route (distance 200) backs up OSPF and takes over when OSPF goes away', () => {
+    const t = chain()
+    for (const r of ['R1', 'R2', 'R3']) t.cfg(r, 'router ospf 1', 'network 10.0.0.0 0.255.255.255 area 0')
+    expect(t.cfg('R1', 'ip route 10.3.0.0 255.255.255.0 10.12.0.2 200')).toMatch(/floating static route/)
+    let table = t.on('R1', 'show ip route')
+    expect(table).toMatch(/O\s+10\.3\.0\.0\/24 \[110\/3\]/)
+    expect(table).toMatch(/is a backup \(distance 200\)/)
+    t.cfg('R1', 'no router ospf 1')
+    table = t.on('R1', 'show ip route')
+    expect(table).toMatch(/S\s+10\.3\.0\.0\/24 \[200\/0\] via 10\.12\.0\.2/)
+    expect(t.on('R1', 'enable', 'show running-config')).toMatch(/ip route 10\.3\.0\.0 255\.255\.255\.0 10\.12\.0\.2 200/)
+    t.cfg('R1', 'no ip route 10.3.0.0 255.255.255.0 10.12.0.2')
+    expect(t.dev('R1').routes).toHaveLength(0)
+  })
+
+  it('rejects a bad exit interface or distance', () => {
+    const t = chain()
+    expect(t.cfg('R1', 'ip route 10.3.0.0 255.255.255.0 g9/9')).toMatch(/Invalid next hop or interface/)
+    expect(t.cfg('R1', 'ip route 10.3.0.0 255.255.255.0 10.12.0.2 300')).toMatch(/Invalid distance 300/)
+  })
+})

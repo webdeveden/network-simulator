@@ -58,7 +58,7 @@ export function dhcpRequest(topo: Topology, state: SimState, dev: Device, ifaceN
     return { ok: false, lines: [L(`${ifaceName}: no link, so nobody can hear the DHCP request`, 'err'), tip(iface.name === 'wlan0' ? 'Join Wi-Fi first: wifi connect <ssid> <password>' : 'Plug a cable into it first.')] }
 
   const lines: Line[] = [L(`DHCPDISCOVER on ${ifaceName} to 255.255.255.255 port 67 (broadcast)`, 'muted')]
-  const heard = broadcastDomain(topo, dev, iface).filter((h) => isRouterLike(h.device) && h.iface.ip && h.iface.prefix !== undefined)
+  const heard = broadcastDomain(topo, dev, iface, state).filter((h) => isRouterLike(h.device) && h.iface.ip && h.iface.prefix !== undefined)
   const problems: string[] = []
   for (const h of heard) {
     const giaddr = h.iface.ip!

@@ -213,7 +213,7 @@ function doPing() {
       <template v-if="ws.selectedDevice.type === 'router' || ws.selectedDevice.type === 'firewall'">
         <h3 class="section">static routes</h3>
         <div v-for="(r, n) in ws.selectedDevice.routes" :key="n" class="flex items-center justify-between py-0.5">
-          <span>{{ r.network }}/{{ r.prefix }} → {{ r.via }}</span>
+          <span>{{ r.network }}/{{ r.prefix }} → {{ r.via || r.iface }}{{ r.iface && r.via ? ` (${r.iface})` : '' }}{{ r.ad ? ` · AD ${r.ad}` : '' }}</span>
           <button class="text-danger hover:glow" @click="ws.selectedDevice.routes.splice(n, 1)">✕</button>
         </div>
         <div class="mt-1 flex gap-1">

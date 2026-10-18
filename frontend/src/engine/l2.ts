@@ -211,13 +211,18 @@ export function walkL2(topo: Topology, from: Device, egress: Iface, visit: (hit:
   return null
 }
 
-/** Finds which interface owns `targetIp` in the broadcast domain behind `egress` (ARP), learning MACs on the way. */
-export function resolveL2(topo: Topology, state: SimState, from: Device, egress: Iface, targetIp: string): L2Hit | string {
+/**
+ * Finds which interface owns `targetIp` in the broadcast domain behind `egress` (ARP),
+ * learning MACs on the way. `proxy` lets a router answer for an address it can route
+ * to (proxy ARP), used when a static route names only an exit interface.
+ */
+export function resolveL2(topo: Topology, state: SimState, from: Device, egress: Iface, targetIp: string, proxy?: (h: L2Hit) => boolean): L2Hit | string {
   let found: L2Hit | null = null
   const owns = (h: L2Hit) =>
     h.iface.ip === targetIp ||
     // Static NAT: the router answers ARP for its global addresses on the outside interface.
-    (h.iface.nat === 'outside' && !!h.device.ios?.nat?.statics.some((s) => s.global === targetIp))
+    (h.iface.nat === 'outside' && !!h.device.ios?.nat?.statics.some((s) => s.global === targetIp)) ||
+    (!!proxy && proxy(h))
   const err = walkL2(topo, from, egress, (h) => {
     if (!owns(h)) return false
     found = h

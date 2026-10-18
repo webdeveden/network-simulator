@@ -8,7 +8,7 @@
 import { inSubnet, intToIp, ipToInt, isValidIp, maskInt, networkOf } from './ip'
 import { broadcastDomain } from './l2'
 import { isRouterLike } from './network'
-import type { Device, Iface, NetworkStatement, Topology } from './types'
+import type { Device, Iface, NetworkStatement, Route, Topology } from './types'
 
 export type RouteKind = 'connected' | 'static' | 'dhcp' | 'ospf' | 'ospf-ia' | 'ospf-e2' | 'eigrp' | 'rip' | 'ebgp' | 'ibgp'
 
@@ -193,12 +193,27 @@ function connectedRoutes(d: Device): RouteCandidate[] {
     .map((i) => ({ network: networkOf(i.ip, i.prefix), prefix: i.prefix, iface: i as L3Iface, nextHop: '-', kind: 'connected' as const, ad: 0, metric: 0 }))
 }
 
+/**
+ * The interface a static route leaves through, or null while it can't be used: its exit
+ * interface is down or unaddressed, or its next hop isn't in a connected subnet.
+ */
+export function staticEgress(d: Device, r: Route): L3Iface | null {
+  const ifaces = d.ifaces.filter((i): i is L3Iface => configured(d, i))
+  if (r.iface) {
+    const i = ifaces.find((x) => x.name === r.iface)
+    if (!i) return null
+    return !r.via || inSubnet(r.via, i.ip, i.prefix) ? i : null
+  }
+  return ifaces.find((i) => inSubnet(r.via, i.ip, i.prefix)) ?? null
+}
+
 function staticRoutes(d: Device): RouteCandidate[] {
   const ifaces = d.ifaces.filter((i): i is L3Iface => configured(d, i))
   const out: RouteCandidate[] = []
   for (const r of d.routes) {
-    const iface = ifaces.find((i) => inSubnet(r.via, i.ip, i.prefix))
-    if (iface) out.push({ network: r.network, prefix: r.prefix, iface, nextHop: r.via, kind: 'static', ad: 1, metric: 0 })
+    const iface = staticEgress(d, r)
+    // nextHop '-': an exit-interface route; each destination is ARPed for directly.
+    if (iface) out.push({ network: r.network, prefix: r.prefix, iface, nextHop: r.via || '-', kind: 'static', ad: r.ad ?? 1, metric: 0 })
   }
   // A DHCP lease's default router becomes a default route (AD 254), like IOS.
   for (const i of ifaces) if (i.dhcp && i.dhcpGateway) out.push({ network: '0.0.0.0', prefix: 0, iface: i, nextHop: i.dhcpGateway, kind: 'dhcp', ad: 254, metric: 0 })

@@ -412,8 +412,9 @@ export function linkActive(topo: Topology, link: Link): boolean {
     if (!ap || wifiProblem(ap, link.wifi.ssid, link.wifi.key) !== null) return false
   }
   return [link.a, link.b].every((end) => {
-    const d = getDevice(topo, end.device)
-    return !d?.ifaces.find((i) => i.name === end.iface)?.shutdown
+    const i = getDevice(topo, end.device)?.ifaces.find((x) => x.name === end.iface)
+    // An err-disabled port (port security, BPDU guard) is down just like a shut-down one.
+    return !i?.shutdown && !i?.errDisabled
   })
 }
 

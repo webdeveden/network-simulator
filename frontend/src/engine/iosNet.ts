@@ -4,13 +4,18 @@
  * `show` output.
  */
 import { activeLeases, dhcpOf, dhcpRequest, poolSize } from './dhcp'
-import { inSubnet, isValidIp, networkOf, prefixToMask } from './ip'
+import { inSubnet, ipToInt, isValidIp, networkOf, prefixToMask } from './ip'
 import { DEFAULT_PORT, switchport, vlanExists, type SimState } from './l2'
 import { getDevice, isRouterLike, isSubIface, isSvi, linkActive, linkOn, physPort } from './network'
-import { bgpSessions, bgpTable, classfulNetwork, classfulPrefix, protocolNeighbors, routerId, configured, ospfCost } from './routing'
-import { ciscoMac, conf, fail, L, longName, maskToPrefix, tip, type Ctx, type Mode, type Result, type Spec } from './iosBase'
+import { bgpSessions, bgpTable, classfulNetwork, classfulPrefix, configured, ospfCost, protocolNeighbors, routerId, routingTable, wildcardMatch } from './routing'
+import { ciscoMac, conf, fail, ifaceName, L, longName, maskToPrefix, tip, type Ctx, type Mode, type Result, type Spec } from './iosBase'
+import { aclConfig, aclIface } from './iosAcl'
+import { securityIface } from './iosSecurity'
+import { stpConfig, stpIface } from './iosStp'
 import type { Device, Iface, NetworkStatement, Switchport } from './types'
 
+// Where a command is accepted (console modes) and which devices have it. A Spec with
+// `only` is hidden from `?` and refused on other device types.
 const CFG: Mode[] = ['config']
 const IF: Mode[] = ['if']
 const RTR: Mode[] = ['router']
@@ -19,11 +24,14 @@ const PRIV: Mode[] = ['priv']
 const SW: Device['type'][] = ['switch']
 const L3: Device['type'][] = ['router', 'firewall', 'isp']
 
+/** A successful config change: `mutated` tells the workspace to save and redraw. */
 const ok = (lines: ReturnType<typeof L>[] = []): Result => ({ lines, mutated: true })
+/** The interface being configured (only valid in interface mode, where `c.f.iface` is always set). */
 const cur = (c: Ctx): Iface => c.dev.ifaces.find((i) => i.name === c.f.iface)!
 /** IOS table style: Fa0/1, Gi0/1. */
 const portAbbr = (n: string) => n.replace(/^fa/, 'Fa').replace(/^g(?=\d)/, 'Gi')
 
+/** Display names for messages ("OSPF is not running"). */
 const PROTO_NAME = { ospf: 'OSPF', eigrp: 'EIGRP', rip: 'RIP', bgp: 'BGP' } as const
 
 // ---------- parsing ----------
@@ -42,14 +50,19 @@ export function parseVlanList(text: string): number[] | null {
   return out
 }
 
+/** One VLAN id, 1-4094 (0 and 4095 are reserved by 802.1Q), or null. */
 const vlanNum = (s: string | undefined) => {
   const n = Number(s)
   return Number.isInteger(n) && n >= 1 && n <= 4094 ? n : null
 }
 
-/** `0.0.0.255` wildcard -> prefix, for display. */
+/**
+ * `0.0.0.255` wildcard -> 24, or null when it isn't a contiguous mask. Used to reject
+ * typos like 0.0.255.0; IOS itself accepts discontiguous wildcards, NetSim doesn't.
+ */
 const wildcardPrefix = (w: string) => maskToPrefix(w.split('.').map((o) => String(255 - Number(o))).join('.'))
 
+/** [1, 10, 11, 12, 20] -> "1,10-12,20", the way IOS prints VLAN lists. */
 function compressVlans(list: number[]): string {
   const v = [...new Set(list)].sort((a, b) => a - b)
   const parts: string[] = []
@@ -64,6 +77,11 @@ function compressVlans(list: number[]): string {
 
 // ---------- switchports ----------
 
+/**
+ * The switchport settings of the interface being configured, created on first use
+ * (a port without settings is an access port in VLAN 1). A string means "not a switch
+ * port here" and is shown as the error.
+ */
 function portSettings(c: Ctx): Switchport | string {
   if (c.dev.type !== 'switch') return '% Switchport commands are for switch ports.'
   const i = cur(c)
@@ -71,6 +89,10 @@ function portSettings(c: Ctx): Switchport | string {
   return (i.switchport ??= { ...DEFAULT_PORT })
 }
 
+/**
+ * Like IOS, `switchport access vlan N` creates VLAN N if it's missing (named VLAN000N)
+ * and says so. Returns that notice, or null when the VLAN already existed.
+ */
 function ensureVlan(dev: Device, v: number): string | null {
   if (vlanExists(dev, v)) return null
   ;(conf(dev).vlans ??= {})[v] = `VLAN${String(v).padStart(4, '0')}`
@@ -79,11 +101,20 @@ function ensureVlan(dev: Device, v: number): string | null {
 
 // ---------- routing process helpers ----------
 
+/** In `router …` mode: which protocol, and its config (always created by `router …` first). */
 function proc(c: Ctx) {
   const p = c.f.proto!
   return { p, cfg: c.dev.ios![p]! }
 }
 
+/**
+ * `network …` means something different per protocol:
+ *   OSPF  network 10.0.0.0 0.0.0.255 area 0   (wildcard and area required)
+ *   EIGRP network 10.0.0.0 [0.0.0.255]        (no wildcard = the whole classful network)
+ *   RIP   network 10.0.0.0                    (always classful)
+ *   BGP   network 10.1.0.0 mask 255.255.255.0 (a prefix to advertise, not interfaces to enable)
+ * Returns the statement, or an error string.
+ */
 function parseNetworkStatement(c: Ctx, rest: string[]): NetworkStatement | { network: string; prefix: number } | string {
   const { p } = proc(c)
   const [net, a, b, area] = rest
@@ -112,6 +143,7 @@ function parseNetworkStatement(c: Ctx, rest: string[]): NetworkStatement | { net
   return { network: net, prefix }
 }
 
+/** After a `network` statement: which show command proves the protocol now has neighbors. */
 function routeTip(c: Ctx): string[] {
   const p = c.f.proto!
   if (p === 'bgp') return []
@@ -120,6 +152,7 @@ function routeTip(c: Ctx): string[] {
 
 // ---------- show output ----------
 
+/** `show vlan brief`: access ports per VLAN, plus hints for ports left in a deleted VLAN and for trunks (not listed, as in IOS). */
 function showVlan(c: Ctx): ReturnType<typeof L>[] {
   const d = c.dev
   const vlans = [1, ...Object.keys(d.ios?.vlans ?? {}).map(Number)].sort((a, b) => a - b)
@@ -137,6 +170,12 @@ function showVlan(c: Ctx): ReturnType<typeof L>[] {
   return lines
 }
 
+/**
+ * `show interfaces trunk`, in IOS's three blocks (mode/status, allowed VLANs, allowed
+ * and existing VLANs), then hints when the far end can't carry the trunk: an access
+ * port on the other switch, or a router port without subinterfaces.
+ * NetSim simplification: Mode always reads "on" because there is no DTP negotiation.
+ */
 function showTrunk(c: Ctx): ReturnType<typeof L>[] {
   const d = c.dev
   const trunks = d.ifaces.filter((i) => i.switchport?.mode === 'trunk')
@@ -166,6 +205,11 @@ function showTrunk(c: Ctx): ReturnType<typeof L>[] {
   return lines
 }
 
+/**
+ * `show ip ospf neighbor`: neighbors that are FULL, then one hint per router on a shared
+ * subnet that isn't (area mismatch, passive, no network statement…), which is the part
+ * that teaches. Priority and Dead Time are placeholders: NetSim runs no hello timers.
+ */
 function showOspfNeighbors(c: Ctx): ReturnType<typeof L>[] {
   if (!c.dev.ios?.ospf) return fail('% OSPF is not running', 'router ospf 1 → network <address> <wildcard> area 0')
   const lines = [L('Neighbor ID     Pri   State           Dead Time   Address         Interface', 'info')]
@@ -173,8 +217,9 @@ function showOspfNeighbors(c: Ctx): ReturnType<typeof L>[] {
   const myRid = routerId(c.dev, c.dev.ios.ospf.routerId) ?? '0.0.0.0'
   for (const n of nbrs.filter((x) => !x.problem)) {
     const rid = routerId(n.adj.peer, n.adj.peer.ios?.ospf?.routerId) ?? '?'
-    // The higher router ID on a segment becomes DR.
-    const role = rid > myRid ? 'DR' : 'BDR'
+    // The higher router ID on a segment becomes DR (all priorities are 1). Compared as
+    // numbers, not text: as text, 10.0.0.9 would beat 10.0.0.10.
+    const role = isValidIp(rid) && ipToInt(rid) > ipToInt(myRid) ? 'DR' : 'BDR'
     lines.push(L(`${rid.padEnd(16)}1     ${`FULL/${role}`.padEnd(16)}00:00:3${(rid.length % 9) + 0}    ${n.adj.peerIface.ip.padEnd(16)}${longName(n.adj.iface.name)}`, 'ok'))
   }
   for (const n of nbrs.filter((x) => x.problem)) lines.push(tip(`No adjacency with ${n.adj.peer.name} on ${n.adj.iface.name}: ${n.problem}`))
@@ -182,6 +227,7 @@ function showOspfNeighbors(c: Ctx): ReturnType<typeof L>[] {
   return lines
 }
 
+/** `show ip eigrp neighbors`, same idea as OSPF. Hold, uptime, SRTT, RTO and Seq are made-up but plausible values. */
 function showEigrpNeighbors(c: Ctx): ReturnType<typeof L>[] {
   const e = c.dev.ios?.eigrp
   if (!e) return fail('% EIGRP is not running', 'router eigrp 100 → network <address> [wildcard]')
@@ -193,6 +239,7 @@ function showEigrpNeighbors(c: Ctx): ReturnType<typeof L>[] {
   return lines
 }
 
+/** `show ip protocols`: one block per running process (networks, passive ports, distance). The only place RIP neighbors show. */
 function showProtocols(c: Ctx): ReturnType<typeof L>[] {
   const cfg = c.dev.ios ?? {}
   const lines: ReturnType<typeof L>[] = []
@@ -229,6 +276,11 @@ function showProtocols(c: Ctx): ReturnType<typeof L>[] {
   return lines
 }
 
+/**
+ * `show ip bgp summary`: one line per configured neighbor. The last column is the
+ * number of prefixes received when Established, else the state (Idle/Active) with the
+ * reason as a hint. Message counters and Up/Down are fixed placeholders.
+ */
 function showBgpSummary(c: Ctx): ReturnType<typeof L>[] {
   const b = c.dev.ios?.bgp
   if (!b) return fail('% BGP not active', 'router bgp <AS> → neighbor <ip> remote-as <AS>')
@@ -243,6 +295,7 @@ function showBgpSummary(c: Ctx): ReturnType<typeof L>[] {
   return lines
 }
 
+/** `show ip bgp`: the best path per prefix; our own networks show next hop 0.0.0.0 and weight 32768, as in IOS. */
 function showBgp(c: Ctx): ReturnType<typeof L>[] {
   const b = c.dev.ios?.bgp
   if (!b) return fail('% BGP not active')
@@ -253,13 +306,18 @@ function showBgp(c: Ctx): ReturnType<typeof L>[] {
   return lines
 }
 
+/**
+ * `show ip dhcp binding`: leases whose client still holds the address. The client id is
+ * "01" (Ethernet) + the MAC, as IOS prints it.
+ */
 function showDhcpBinding(c: Ctx): ReturnType<typeof L>[] {
   const lines = [L('IP address       Client-ID/Hardware address  Lease expiration        Type       Client', 'info')]
-  for (const l of activeLeases(c.topo, c.dev)) lines.push(L(`${l.ip.padEnd(17)}01${ciscoMac(l.mac).replace(/\./g, '.')}`.padEnd(45) + 'Infinite'.padEnd(24) + 'Automatic  ' + l.host))
+  for (const l of activeLeases(c.topo, c.dev)) lines.push(L(`${l.ip.padEnd(17)}01${ciscoMac(l.mac)}`.padEnd(45) + 'Infinite'.padEnd(24) + 'Automatic  ' + l.host))
   if (lines.length === 1) lines.push(tip('No leases yet. On a PC: dhcp (or tick DHCP in its panel)'))
   return lines
 }
 
+/** `show ip dhcp pool`: each pool's settings and use, with hints for a missing network or default-router (the two usual mistakes). */
 function showDhcpPool(c: Ctx): ReturnType<typeof L>[] {
   const s = c.dev.ios?.dhcp
   if (!s || !Object.keys(s.pools).length) return fail('% No DHCP pools', 'ip dhcp pool LAN → network 192.168.1.0 255.255.255.0 → default-router 192.168.1.1')
@@ -279,6 +337,11 @@ function showDhcpPool(c: Ctx): ReturnType<typeof L>[] {
   return lines
 }
 
+/**
+ * `show ip nat translations`: static mappings from the config, then the dynamic ones
+ * NAT recorded while traffic flowed (they live in SimState, so they reset with it).
+ * When empty, says which of the three steps is missing: a rule, inside/outside, or traffic.
+ */
 function showNat(c: Ctx, state: SimState): ReturnType<typeof L>[] {
   const lines = [L('Pro  Inside global         Inside local          Outside local         Outside global', 'info')]
   for (const s of c.dev.ios?.nat?.statics ?? []) lines.push(L(`---  ${s.global.padEnd(22)}${s.local.padEnd(22)}---                   ---`))
@@ -299,7 +362,11 @@ function showNat(c: Ctx, state: SimState): ReturnType<typeof L>[] {
 
 // ---------- the commands ----------
 
-/** `router ospf|eigrp|rip|bgp`. */
+/**
+ * `router ospf|eigrp|rip|bgp`: creates the process if needed and enters router mode.
+ * NetSim allows one process per protocol per router (enough for labs); asking for a
+ * second OSPF process id or another AS is refused with a hint instead of creating it.
+ */
 function startProcess(proto: 'ospf' | 'eigrp' | 'rip' | 'bgp'): Spec {
   const syntax = { ospf: ['<1-65535>  Process ID, e.g. router ospf 1'], eigrp: ['<1-65535>  Autonomous system number, e.g. router eigrp 100'], rip: ['<cr>'], bgp: ['<1-4294967295>  Autonomous system number, e.g. router bgp 65001'] }[proto]
   return {
@@ -330,6 +397,7 @@ function startProcess(proto: 'ospf' | 'eigrp' | 'rip' | 'bgp'): Spec {
   }
 }
 
+/** `no router …`: removes the whole process; its routes disappear from every table on the next lookup. */
 function stopProcess(proto: 'ospf' | 'eigrp' | 'rip' | 'bgp'): Spec {
   return {
     words: ['no', 'router', proto],
@@ -344,6 +412,10 @@ function stopProcess(proto: 'ospf' | 'eigrp' | 'rip' | 'bgp'): Spec {
   }
 }
 
+/**
+ * `[no] passive-interface X` for OSPF, EIGRP and RIP. The interface is parsed like the
+ * `interface` command: g0/2, gi0/2, GigabitEthernet0/2 or "GigabitEthernet 0/2".
+ */
 function passiveSpec(on: boolean): Spec {
   return {
     words: on ? ['passive-interface'] : ['no', 'passive-interface'],
@@ -353,8 +425,8 @@ function passiveSpec(on: boolean): Spec {
     run: (c, rest) => {
       if (c.f.proto === 'bgp') return fail('% Not used by BGP')
       const p = c.f.proto as 'ospf' | 'eigrp' | 'rip'
-      const name = rest.join('').toLowerCase()
-      const i = c.dev.ifaces.find((x) => x.name === name || longName(x.name).toLowerCase() === name || x.name === name.replace(/^gigabitethernet/, 'g').replace(/^fastethernet/, 'fa'))
+      const name = ifaceName(rest)
+      const i = name ? c.dev.ifaces.find((x) => x.name === name) : undefined
       if (!i) return fail(`% Invalid interface. ${c.dev.name} has: ${c.dev.ifaces.map((x) => x.name).join(', ')}`)
       const cfg = c.dev.ios![p]!
       const list = new Set(cfg.passive ?? [])
@@ -366,6 +438,11 @@ function passiveSpec(on: boolean): Spec {
   }
 }
 
+/**
+ * Every command this file adds, merged into ios.ts's SPECS. Order matters only for
+ * `?` listings; the parser matches by words and mode. Note that `network` exists twice:
+ * in router mode (enable a protocol) and in DHCP pool mode (the pool's subnet).
+ */
 export const NET_SPECS: Spec[] = [
   // ----- VLANs (switch) -----
   {
@@ -907,53 +984,6 @@ export const NET_SPECS: Spec[] = [
   },
 
   // ----- access lists and NAT -----
-  {
-    words: ['access-list'],
-    modes: CFG,
-    help: 'Add a standard access list entry',
-    only: L3,
-    syntax: ['<1-99> permit|deny <source> [wildcard]  e.g. access-list 1 permit 192.168.1.0 0.0.0.255', '<1-99> permit any', '<1-99> permit host 192.168.1.10'],
-    run: (c, rest) => {
-      const [num, act, a, b] = rest
-      const n = Number(num)
-      if (!Number.isInteger(n) || n < 1 || n > 99) return fail('% NetSim supports standard access lists 1-99')
-      const action = act && 'permit'.startsWith(act.toLowerCase()) ? 'permit' : act && 'deny'.startsWith(act.toLowerCase()) ? 'deny' : null
-      if (!action) return fail('% Incomplete command.', 'access-list 1 permit 192.168.1.0 0.0.0.255')
-      let entry
-      if (a?.toLowerCase() === 'any') entry = { action, src: 'any' } as const
-      else if (a?.toLowerCase() === 'host' && b && isValidIp(b)) entry = { action, src: b } as const
-      else if (a && isValidIp(a)) {
-        if (b && wildcardPrefix(b) === null) return fail(`% ${b} is not a wildcard mask (0.0.0.255 for a /24)`, ...(maskToPrefix(b) !== null ? [`That looks like a subnet mask. ACLs use wildcards: ${b.split('.').map((o) => 255 - Number(o)).join('.')}`] : []))
-        entry = b ? ({ action, src: a, wildcard: b } as const) : ({ action, src: a } as const)
-      } else return fail('% Incomplete command.')
-      ;((conf(c.dev).acls ??= {})[n] ??= []).push(entry)
-      return ok()
-    },
-  },
-  {
-    words: ['no', 'access-list'],
-    modes: CFG,
-    help: 'Delete an access list',
-    only: L3,
-    run: (c, rest) => {
-      delete c.dev.ios?.acls?.[Number(rest[0])]
-      return ok()
-    },
-  },
-  {
-    words: ['show', 'access-lists'],
-    modes: EXEC,
-    help: 'List access lists',
-    only: L3,
-    run: (c) => {
-      const acls = Object.entries(c.dev.ios?.acls ?? {})
-      if (!acls.length) return [tip('No access lists. access-list 1 permit 192.168.1.0 0.0.0.255')]
-      return acls.flatMap(([n, list]) => [
-        L(`Standard IP access list ${n}`, 'info'),
-        ...list.map((e, k) => L(`    ${(k + 1) * 10} ${e.action} ${e.src === 'any' ? 'any' : e.wildcard ? `${e.src}, wildcard bits ${e.wildcard}` : e.src}`)),
-      ])
-    },
-  },
   ...(['inside', 'outside'] as const).flatMap((side): Spec[] => [
     {
       words: ['ip', 'nat', side],
@@ -984,9 +1014,10 @@ export const NET_SPECS: Spec[] = [
         return ok()
       }
       if (w === 'list') {
-        const acl = Number(rest[1])
+        // The list can be numbered (1) or named (INSIDE-NETS).
+        const acl = rest[1]
         const kw = rest[2]?.toLowerCase()
-        if (!Number.isInteger(acl) || !kw || !'interface'.startsWith(kw)) return fail('% Incomplete command.', 'ip nat inside source list 1 interface g0/1 overload')
+        if (!acl || !kw || !'interface'.startsWith(kw)) return fail('% Incomplete command.', 'ip nat inside source list 1 interface g0/1 overload')
         const tail = rest.slice(3)
         const over = tail.findIndex((t) => 'overload'.startsWith(t.toLowerCase()) && t.length > 1)
         const nameTokens = over >= 0 ? tail.slice(0, over) : tail
@@ -1057,19 +1088,21 @@ export const NET_SPECS: Spec[] = [
   },
 ]
 
-/** Whether a network statement covers an address (OSPF/EIGRP wildcard, or classful). */
+/**
+ * Whether a network statement covers an address (OSPF/EIGRP wildcard, or classful).
+ * Uses routing.ts's matching, so the console's "now runs on g0/1" tip always agrees
+ * with what the routing engine actually enables.
+ */
 function matchesStatement(ip: string, st: NetworkStatement): boolean {
-  if (st.wildcard) {
-    const care = st.wildcard.split('.').map((o) => 255 - Number(o))
-    const a = ip.split('.').map(Number)
-    const b = st.network.split('.').map(Number)
-    return a.every((o, k) => (o & care[k]) === (b[k] & care[k]))
-  }
-  return classfulNetwork(ip) === classfulNetwork(st.network)
+  return st.wildcard ? wildcardMatch(ip, st.network, st.wildcard) : classfulNetwork(ip) === classfulNetwork(st.network)
 }
 
+/**
+ * BGP only advertises a `network` it already has an exact route for: connected, static
+ * or learned from an IGP. Checked against the real routing table, the same one BGP uses.
+ */
 function configuredRoute(c: Ctx, network: string, prefix: number) {
-  return c.dev.ifaces.some((i) => configured(c.dev, i) && networkOf(i.ip!, i.prefix!) === network && i.prefix === prefix) || c.dev.routes.some((r) => r.network === network && r.prefix === prefix)
+  return routingTable(c.topo, c.dev).some((r) => r.network === network && r.prefix === prefix)
 }
 
 /** `ip address dhcp`: the interface asks a DHCP server for its address. */
@@ -1095,6 +1128,7 @@ export function ipAddressDhcp(c: Ctx): Result {
 export function configHead(dev: Device): string[] {
   const out: string[] = []
   const c = dev.ios ?? {}
+  out.push(...stpConfig(dev))
   for (const [v, name] of Object.entries(c.vlans ?? {})) out.push(`vlan ${v}`, ` name ${name}`, '!')
   for (const e of c.dhcp?.excluded ?? []) out.push(`ip dhcp excluded-address ${e.from}${e.to !== e.from ? ' ' + e.to : ''}`)
   if (c.dhcp?.excluded.length) out.push('!')
@@ -1122,8 +1156,12 @@ export function configIface(dev: Device, i: Iface): string[] {
     } else {
       if ((sp.vlan ?? 1) !== 1) out.push(` switchport access vlan ${sp.vlan}`)
       out.push(' switchport mode access')
+      out.push(...securityIface(i))
     }
   }
+  out.push(...aclIface(i))
+  // Spanning-tree port settings apply whatever the switchport mode (or none set yet).
+  if (dev.type === 'switch') out.push(...stpIface(i))
   if (i.helper) out.push(` ip helper-address ${i.helper}`)
   if (i.nat) out.push(` ip nat ${i.nat}`)
   if (i.ospfCost) out.push(` ip ospf cost ${i.ospfCost}`)
@@ -1163,9 +1201,7 @@ export function configTail(dev: Device): string[] {
   if (c.nat?.overload) out.push(`ip nat inside source list ${c.nat.overload.acl} interface ${longName(c.nat.overload.iface)} overload`)
   for (const s of c.nat?.statics ?? []) out.push(`ip nat inside source static ${s.local} ${s.global}`)
   if (c.nat?.overload || c.nat?.statics.length) out.push('!')
-  for (const [n, list] of Object.entries(c.acls ?? {}))
-    for (const e of list) out.push(`access-list ${n} ${e.action} ${e.src === 'any' ? 'any' : e.wildcard ? `${e.src} ${e.wildcard}` : `host ${e.src}`}`)
-  if (Object.keys(c.acls ?? {}).length) out.push('!')
+  out.push(...aclConfig(dev))
   if (dev.type === 'switch' && dev.gateway) out.push(`ip default-gateway ${dev.gateway}`, '!')
   return out
 }

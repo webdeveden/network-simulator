@@ -36,9 +36,10 @@ import {
   type Spec,
 } from './iosBase'
 import { configHead, configIface, configTail, ipAddressDhcp, NET_SPECS } from './iosNet'
+import { staticEgress } from './routing'
 import { DEFAULT_PORT, vlanExists } from './l2'
 import { cableProblem, getDevice, isConsolePort, isRadio, isSubIface, isSvi, isVirtual, linkActive, linkOn, linksOn, netIfaces, peerOf, physPort, portKind } from './network'
-import type { Device, FwRule, Iface, IosConfig, SsidConfig, Topology, VtyTransport } from './types'
+import type { Device, FwRule, Iface, IosConfig, Route, SsidConfig, Topology, VtyTransport } from './types'
 
 export { isIos, longName, maskToPrefix }
 export type { Ctx, Frame, Mode, Pending, Session }
@@ -130,7 +131,7 @@ export function runningConfig(dev: Device): string[] {
     out.push('!')
   }
   out.push(...configTail(dev))
-  for (const r of dev.routes) out.push(`ip route ${r.network} ${prefixToMask(r.prefix)} ${r.via}`)
+  for (const r of dev.routes) out.push(routeLine(r))
   if (dev.routes.length) out.push('!')
   if (dev.type === 'firewall') {
     out.push('! NetSim firewall policy (first match wins)')
@@ -506,12 +507,23 @@ const SPECS: Spec[] = [
     only: L3,
     syntax: ['A.B.C.D  Destination prefix', '   e.g. ip route 10.3.0.0 255.255.255.0 10.2.0.2'],
     run: (c, rest) => {
-      const r = parseRoute(rest)
+      const r = parseRoute(c.dev, rest)
       if (typeof r === 'string') return fail(r)
-      if (c.dev.routes.some((x) => x.network === r.network && x.prefix === r.prefix && x.via === r.via)) return []
+      const existing = c.dev.routes.find((x) => sameRoute(x, r))
+      if (existing) {
+        // Re-entering a route with another distance updates it, like IOS.
+        if (existing.ad === r.ad) return []
+        if (r.ad) existing.ad = r.ad
+        else delete existing.ad
+        return { lines: [], mutated: true }
+      }
       c.dev.routes.push(r)
-      const active = c.dev.ifaces.some((i) => i.ip && !i.shutdown && inSubnet(r.via, i.ip, i.prefix!))
-      return { lines: active ? [] : [tip(`Next hop ${r.via} is not in a connected subnet, so this route stays inactive.`)], mutated: true }
+      const lines = []
+      if (!staticEgress(c.dev, r))
+        lines.push(tip(r.iface ? `${r.iface} has no address or is down${r.via ? `, or ${r.via} isn't in its subnet` : ''}, so this route stays inactive.` : `Next hop ${r.via} is not in a connected subnet, so this route stays inactive.`))
+      if (r.iface && !r.via) lines.push(tip(`No next hop: ${c.dev.name} ARPs for every destination out of ${r.iface}, and the next router answers (proxy ARP). A next-hop address is the more common way.`))
+      if (r.ad) lines.push(tip(`Distance ${r.ad}: a floating static route, used only while no better route (lower distance) to ${r.network}/${r.prefix} exists.`))
+      return { lines, mutated: true }
     },
   },
   {
@@ -520,9 +532,9 @@ const SPECS: Spec[] = [
     help: 'Remove a static route',
     only: L3,
     run: (c, rest) => {
-      const r = parseRoute(rest)
+      const r = parseRoute(c.dev, rest)
       if (typeof r === 'string') return fail(r)
-      const n = c.dev.routes.findIndex((x) => x.network === r.network && x.prefix === r.prefix && x.via === r.via)
+      const n = c.dev.routes.findIndex((x) => sameRoute(x, r))
       if (n < 0) return fail('%No matching route to delete')
       c.dev.routes.splice(n, 1)
       return { lines: [], mutated: true }
@@ -1052,17 +1064,51 @@ function legacy(c: Ctx, line: string, quiet = false): Result {
   return quiet ? { ...r, lines: r.lines.filter((l) => l.kind === 'err') } : r
 }
 
-function parseRoute(rest: string[]) {
-  const usage = '% Incomplete command. ip route <network> <mask> <next-hop IP>, e.g. ip route 10.3.0.0 255.255.255.0 10.2.0.2'
-  const [net, mask, via] = rest
-  if (!net || !mask || !via) return usage
+/**
+ * `ip route <network> <mask>` followed by any of:
+ *   <next-hop>                 10.2.0.2
+ *   <exit-interface>           g0/1 (or GigabitEthernet0/1, GigabitEthernet 0/1)
+ *   <exit-interface> <next-hop>
+ * and an optional administrative distance at the end (a floating static route).
+ */
+function parseRoute(dev: Device, rest: string[]): Route | string {
+  const usage = '% Incomplete command. ip route <network> <mask> <next-hop | exit-interface> [distance], e.g. ip route 10.3.0.0 255.255.255.0 10.2.0.2'
+  const [net, mask, ...tail] = rest
+  if (!net || !mask || !tail.length) return usage
   if (!isValidIp(net)) return `% Invalid network ${net}`
   const prefix = maskToPrefix(mask)
   if (prefix === null) return `% Bad mask ${mask}${/^\/?\d+$/.test(mask) ? ' (IOS wants a dotted mask like 255.255.255.0)' : ''}`
-  if (!isValidIp(via)) return '% NetSim routes need a next-hop IP address, not an exit interface'
   if (networkOf(net, prefix) !== net) return `%Inconsistent address and mask (did you mean ${networkOf(net, prefix)}?)`
-  return { network: net, prefix, via }
+  let k = 0
+  let iface: string | undefined
+  if (!isValidIp(tail[0])) {
+    // An exit interface, typed as one token (g0/1) or two (GigabitEthernet 0/1).
+    for (const n of [1, 2]) {
+      const name = ifaceName(tail.slice(0, n))
+      if (name && dev.ifaces.some((i) => i.name === name)) {
+        iface = name
+        k = n
+        break
+      }
+    }
+    if (!iface) return `% Invalid next hop or interface ${tail[0]}. ${dev.name} has: ${dev.ifaces.map((x) => x.name).join(', ')}`
+  }
+  const via = tail[k] && isValidIp(tail[k]) ? tail[k++] : ''
+  if (!iface && !via) return usage
+  let ad: number | undefined
+  if (tail[k] !== undefined) {
+    ad = Number(tail[k])
+    if (!Number.isInteger(ad) || ad < 1 || ad > 255) return `% Invalid distance ${tail[k]} (1-255)`
+    if (ad === 1) ad = undefined
+  }
+  return { network: net, prefix, via, ...(iface ? { iface } : {}), ...(ad ? { ad } : {}) }
 }
+
+/** Same route, ignoring the distance (IOS replaces the distance of an existing route). */
+const sameRoute = (a: Route, b: Route) => a.network === b.network && a.prefix === b.prefix && a.via === b.via && (a.iface ?? '') === (b.iface ?? '')
+
+/** How a static route reads in the running-config. */
+export const routeLine = (r: Route) => `ip route ${r.network} ${prefixToMask(r.prefix)}${r.iface ? ' ' + longName(r.iface) : ''}${r.via ? ' ' + r.via : ''}${r.ad ? ' ' + r.ad : ''}`
 
 function generateRsa(dev: Device, bitsArg: string | undefined): CommandResult {
   const bits = bitsArg === undefined || bitsArg === '' ? 1024 : Number(bitsArg)
@@ -1101,13 +1147,20 @@ function showIpRoute(topo: Topology, dev: Device): Line[] {
       continue
     }
     const code = (CODE[r.kind].trimEnd() + (r.prefix === 0 ? '*' : '')).padEnd(9)
+    if (r.kind === 'static' && r.nextHop === '-') {
+      lines.push(L(`${code}${r.network}/${r.prefix}${r.ad !== 1 ? ` [${r.ad}/0]` : ''} is directly connected, ${iface}`))
+      continue
+    }
     const age = r.kind === 'static' || r.kind === 'dhcp' ? '' : ', 00:02:14'
     lines.push(L(`${code}${r.network}/${r.prefix} [${r.ad}/${r.metric}] via ${r.nextHop}${age}${r.kind === 'static' ? '' : `, ${iface}`}`, r.kind === 'static' || r.kind === 'dhcp' ? 'out' : 'ok'))
   }
   if (table.length === 0) lines.push(tip('Empty: give an interface an IP address and bring it up first.'))
-  for (const r of dev.routes)
-    if (!dev.ifaces.some((i) => i.ip && !i.shutdown && inSubnet(r.via, i.ip, i.prefix!)))
-      lines.push(tip(`ip route ${r.network} ${prefixToMask(r.prefix)} ${r.via} is configured but inactive: ${r.via} is not in a connected subnet.`))
+  for (const r of dev.routes) {
+    if (!staticEgress(dev, r)) lines.push(tip(`${routeLine(r)} is configured but inactive: ${r.iface ? `${r.iface} is down or has no address` : `${r.via} is not in a connected subnet`}.`))
+    // A floating route that lost to a better one isn't shown, as in IOS; say why.
+    else if (r.ad && !table.some((x) => x.kind === 'static' && x.network === r.network && x.prefix === r.prefix))
+      lines.push(tip(`${routeLine(r)} is a backup (distance ${r.ad}): a better route to ${r.network}/${r.prefix} is in use.`))
+  }
   return lines
 }
 

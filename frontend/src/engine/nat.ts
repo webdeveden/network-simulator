@@ -4,18 +4,9 @@
  * address for the hosts an access list permits. Translations live in the runtime
  * state, so replies can be translated back.
  */
-import { wildcardMatch } from './routing'
+import { aclPermits } from './acl'
 import type { NatEntry, SimState } from './l2'
 import type { Device, Iface } from './types'
-
-/** First matching line of a numbered standard ACL; no match = implicit deny. */
-export function aclPermits(d: Device, acl: number, ip: string): boolean {
-  for (const e of d.ios?.acls?.[acl] ?? []) {
-    const hit = e.src === 'any' || (e.wildcard ? wildcardMatch(ip, e.src, e.wildcard) : ip === e.src)
-    if (hit) return e.action === 'permit'
-  }
-  return false
-}
 
 const table = (state: SimState, d: Device) => ((state.nat ??= {})[d.id] ??= [])
 

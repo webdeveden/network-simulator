@@ -40,6 +40,18 @@ Supported: `ip address`, `shutdown`, `description`, `ip route`, `hostname`, `ena
   - **Relay:** `ip helper-address` on the client's gateway.
   - **Clients:** `dhcp` / `ipconfig /renew` on PCs, laptops, phones and printers, or the **DHCP** button next to each interface in the side panel. A router interface can be a client too (`ip address dhcp`) and installs the default route it is given.
   - **Checking:** `show ip dhcp binding`, `show ip dhcp pool`. A failed request explains what's missing: no router in that VLAN, no pool for the subnet, or a relay that can't reach the server.
+- **Static routes:** next hop (`ip route 10.3.0.0 255.255.255.0 10.2.0.2`), exit interface (`… g0/1`, answered with proxy ARP), or both. A distance at the end makes a floating static route (`… 10.2.0.2 200`), a backup that stays out of the table while a better route exists.
+- **Access lists:**
+  - Standard (1-99) and extended (100-199) numbered lists, and named lists (`ip access-list standard|extended NAME`, with sequence numbers and `remark`).
+  - Extended lines match `ip|icmp|tcp|udp`, source, destination, `eq <port>` (numbers or names like `www`, `ssh`, `domain`) and `established`.
+  - Applied with `ip access-group <acl> in|out` (checked before NAT inbound and after NAT outbound, as in IOS), or `access-class <acl> in` on `line vty` to limit who can SSH in.
+  - First match wins, with the implicit deny at the end. ACLs are stateless, so replies are checked too.
+  - `show access-lists` counts matches per line. The console warns about subnet masks used as wildcards, lists with only denies, and lines that can never match.
+- **Port security:** `switchport port-security` (the port must be `switchport mode access` first), `maximum`, `violation shutdown|restrict|protect`, `mac-address sticky` or a static `mac-address`. A violation err-disables the port (`shutdown` / `no shutdown` recovers it). `show port-security [interface|address]`.
+- **Spanning tree:**
+  - One tree per VLAN (PVST+, or `spanning-tree mode rapid-pvst`). The lowest bridge ID becomes root, root ports take the cheapest path (cost 19 Fa, 4 Gi), and redundant ports block. Traffic follows the tree, and a blocked port takes over when a link fails.
+  - Commands: `spanning-tree vlan N priority` (steps of 4096) or `root primary|secondary`, `spanning-tree portfast`, `bpduguard enable` (a switch plugged in err-disables the port), `spanning-tree cost`.
+  - `show spanning-tree` in the IOS layout.
 - **NAT:** `ip nat inside` / `ip nat outside` on interfaces, `access-list 1 permit 192.168.1.0 0.0.0.255` and `ip nat inside source list 1 interface g0/1 overload` (PAT), or `ip nat inside source static <inside> <public>`. Ping and traceroute show each translation, and replies are translated back. `show ip nat translations`, `show access-lists`.
 
 ### Cables
@@ -183,6 +195,8 @@ Add an entry to `MISSIONS` in `backend/app/missions.py`. Each entry has:
 ## Roadmap
 
 - Blue Team scenarios: attack traffic, threat map, log analysis, patching SQLi/XSS
+- IPv6 (addressing, SLAAC, static and OSPFv3 routing)
+- EtherChannel, HSRP, DHCP snooping
 - DNS
 - Redistribution between routing protocols, OSPF multi-area rules (area 0 backbone)
 - Leaderboards

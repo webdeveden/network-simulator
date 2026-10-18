@@ -603,6 +603,29 @@ const nat: Topic = {
   ],
 }
 
+const acls: Topic = {
+  id: 'acls',
+  title: 'Access lists (ACLs)',
+  body: [
+    'An ACL is an ordered list of permit and deny lines. A packet is checked top to bottom, the first line that matches decides, and a packet that matches nothing is denied: the invisible "implicit deny" at the end. So specific lines go first, and most lists end with a permit.',
+    'Standard lists (1-99, or ip access-list standard NAME) match the source address only: apply them close to the destination. Extended lists (100-199, or ip access-list extended NAME) match protocol, source, destination and port (eq 22, eq www): apply them close to the source.',
+    'Addresses use wildcard masks, the inverse of a subnet mask: 10.1.0.0 0.0.0.255 is the /24, host 10.1.0.5 is one address, any is everything.',
+    'An ACL does nothing until it is applied: ip access-group <acl> in|out on an interface, or access-class <acl> in under line vty to control who may SSH in.',
+    'ACLs are stateless: replies are checked too. "established" on a TCP line matches replies to sessions started from the inside. show access-lists shows how many packets each line matched.',
+  ],
+  diagram: ['PC ── in ▶ [g0/0  R1  g0/1] ▶ out ── network', '      ip access-group 110 in   ip access-group 110 out'].join('\n'),
+  examples: [
+    {
+      title: 'Block SSH to one server, allow the rest',
+      commands: ['enable', 'configure terminal', 'access-list 110 deny tcp any host 10.3.0.10 eq 22', 'access-list 110 permit ip any any', 'interface g0/0', 'ip access-group 110 in', 'end', 'show access-lists'],
+    },
+    {
+      title: 'Only the admin PC may SSH to this router',
+      commands: ['enable', 'configure terminal', 'ip access-list standard ADMINS', 'permit host 10.1.0.10', 'exit', 'line vty 0 4', 'access-class ADMINS in', 'end'],
+    },
+  ],
+}
+
 const TOPICS: Record<DeviceType, Topic[]> = {
   pc: [ipBasics, gateway, dhcpClient, testing, cabling, ports, sshClient],
   laptop: [wifi, ipBasics, gateway, dhcpClient, testing, sshClient],
@@ -610,8 +633,8 @@ const TOPICS: Record<DeviceType, Topic[]> = {
   server: [serverRole, ipBasics, gateway, testing, ports],
   switch: [switching, vlans, trunks, switchMgmt, cablingIos, structured, iosModes, portAdmin, neighbors, saving],
   ap: [apRole, apSecure, wifiSecurity, iosModes, saving],
-  router: [routing, cablingIos, iosModes, ifaceConfig, staticRoutes, dynamicRouting, roas, dhcpServer, nat, bgp, troubleshooting, hardening, saving],
-  firewall: [firewalling, fwRules, iosModes, ifaceConfig, staticRoutes, dynamicRouting, nat, saving],
+  router: [routing, cablingIos, iosModes, ifaceConfig, staticRoutes, dynamicRouting, roas, acls, dhcpServer, nat, bgp, troubleshooting, hardening, saving],
+  firewall: [firewalling, fwRules, iosModes, ifaceConfig, staticRoutes, dynamicRouting, acls, nat, saving],
   patch: [patchPanel, structured, cabling],
   modem: [ontTopic, cabling, structured],
   printer: [printerTopic, ipBasics, gateway, dhcpClient, testing],

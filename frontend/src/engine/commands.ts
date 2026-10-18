@@ -2,6 +2,7 @@ import { formatRule, routingTable, sendPacket, type SimState } from './forwardin
 import { inSubnet, isValidIp, parseCidr, prefixToMask } from './ip'
 import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, isPhonePcPort, isWifiClient, isRouterLike, linkActive, linkOn, netIfaces, setIfaceIp, wifiProblem } from './network'
 import { dhcpRelease, dhcpRequest } from './dhcp'
+import { staticEgress } from './routing'
 import type { Device, FwRule, PingResult, Proto, Topology } from './types'
 
 export type LineKind = 'out' | 'ok' | 'err' | 'info' | 'muted'
@@ -399,8 +400,10 @@ function showRoutes(topo: Topology, dev: Device): CommandResult {
   dev.routes.forEach((r, n) => {
     if (!rows.some((x) => x.kind === 'static' && x.network === r.network && x.prefix === r.prefix && x.nextHop === r.via))
       lines.push(out(`S#${n + 1}   ${(r.network + '/' + r.prefix).padEnd(20)}${r.via.padEnd(17)}INACTIVE`, 'err'))
+    if (!staticEgress(dev, r)) lines.push(out(`S#${n + 1}   ${(r.network + '/' + r.prefix).padEnd(20)}${(r.via || r.iface || '').padEnd(17)}INACTIVE`, 'err'))
   })
   if (dev.routes.length) lines.push(out(`static routes: ${dev.routes.map((r, n) => `#${n + 1} ${r.network}/${r.prefix} via ${r.via}`).join(', ')}`, 'muted'))
+  if (dev.routes.length) lines.push(out(`static routes: ${dev.routes.map((r, n) => `#${n + 1} ${r.network}/${r.prefix} via ${r.via || r.iface}`).join(', ')}`, 'muted'))
   if (lines.length === 1) lines.push(out('(empty — configure an interface IP first)', 'muted'))
   return { lines }
 }
