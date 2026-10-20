@@ -534,6 +534,11 @@ export function connectPorts(topo: Topology, aId: string, aIface: string, bId: s
   if (!(cable in CABLES)) return cable
   const link: Link = { id: randomId(), a: { device: a.id, iface: aIface }, b: { device: b.id, iface: bIface }, up: true, cable: cable as CableType }
   topo.links.push(link)
+  // BPDU guard: a switch plugged into a guarded port sends BPDUs, so the port err-disables.
+  for (const [d, port, other] of [[a, aIface, b], [b, bIface, a]] as const) {
+    const i = d.ifaces.find((x) => x.name === port)
+    if (d.type === 'switch' && other.type === 'switch' && i?.stp?.bpduguard) i.errDisabled = 'bpduguard'
+  }
   return link
 }
 

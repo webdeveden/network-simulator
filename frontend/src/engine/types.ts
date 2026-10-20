@@ -31,6 +31,10 @@ export interface Iface {
   /** `ip access-group <acl> in|out`. */
   aclIn?: string
   aclOut?: string
+  /** `ip dhcp snooping trust`: DHCP server replies are allowed in on this port (the uplink). */
+  snoopTrust?: boolean
+  /** `ip arp inspection trust`: ARP is not checked on this port (the uplink or a router). */
+  daiTrust?: boolean
 }
 
 /** `switchport port-security …` on an access port. */
@@ -146,6 +150,10 @@ export interface IosConfig {
   /** Named lists: standard or extended (numbered ones go by their number range). */
   aclTypes?: Record<string, 'standard' | 'extended'>
   nat?: NatConfig
+  /** `ip dhcp snooping`: on, and the VLANs it watches. Drops rogue DHCP offers on untrusted ports. */
+  dhcpSnoop?: { vlans: number[] }
+  /** `ip arp inspection vlan …`: the VLANs where ARP is checked against the snooping table. */
+  arpInspect?: { vlans: number[] }
 }
 
 export interface NetworkStatement {

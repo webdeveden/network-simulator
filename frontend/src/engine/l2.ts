@@ -9,6 +9,7 @@
  * answers for the switch's own address in that VLAN.
  */
 import { cableProblem, getDevice, isBridge, isSubIface, isSvi, linkActive, linkOn, linksOn, patchPartner, peerOf, physPort } from './network'
+import { stpView } from './stp'
 import type { Device, Iface, Switchport, Topology } from './types'
 
 /** Runtime tables learned while traffic flows. Not part of the saved topology. */
@@ -21,6 +22,10 @@ export interface SimState {
   macVlan?: Record<string, Record<string, number>>
   /** routerId -> NAT translations */
   nat?: Record<string, NatEntry[]>
+  /** deviceId -> "acl#seq" -> packets matched (show access-lists counters) */
+  aclHits?: Record<string, Record<string, number>>
+  /** switchId -> port -> MACs learned by port security, and violations seen */
+  portSec?: Record<string, Record<string, { learned: string[]; violations: number; last?: string }>>
 }
 
 export interface NatEntry {
@@ -99,10 +104,41 @@ export interface L2Hit {
  * interface it reaches (and every SVI in the right VLAN). `visit` returns true to stop.
  * Returns why the frame couldn't leave at all, or null.
  */
-export function walkL2(topo: Topology, from: Device, egress: Iface, visit: (hit: L2Hit) => boolean): string | null {
+/** Options for real traffic (not control-plane lookups): source MAC, state, and dropped-frame notes. */
+export interface WalkOptions {
+  srcMac: string
+  state: SimState
+  notes: string[]
+}
+
+/** Port security on a switch access port: may a frame from `mac` enter? Learns up to the max; one more is a violation. */
+function portSecurityAdmits(sw: Device, port: Iface, mac: string, o: WalkOptions): boolean {
+  const ps = port.switchport?.portSecurity
+  if (!ps || port.switchport?.mode !== 'access') return true
+  const st = (((o.state.portSec ??= {})[sw.id] ??= {})[port.name] ??= { learned: [], violations: 0 })
+  const known = [...ps.macs.map((m) => m.mac), ...st.learned]
+  if (known.includes(mac)) return true
+  if (known.length < (ps.max ?? 1)) {
+    if (ps.sticky) ps.macs.push({ mac, sticky: true })
+    else st.learned.push(mac)
+    return true
+  }
+  st.violations++
+  st.last = mac
+  const violation = ps.violation ?? 'shutdown'
+  if (violation === 'shutdown') {
+    port.errDisabled = 'psecure-violation'
+    o.notes.push(`${sw.name} ${port.name} went err-disabled: port security saw MAC ${mac}, one more than its maximum of ${ps.max ?? 1} (shutdown, then no shutdown, to bring it back)`)
+  } else o.notes.push(`${sw.name} ${port.name} dropped a frame from MAC ${mac}: port security allows only ${ps.max ?? 1} (${violation})`)
+  return false
+}
+
+export function walkL2(topo: Topology, from: Device, egress: Iface, visit: (hit: L2Hit) => boolean, opts?: WalkOptions): string | null {
   type Node = { linkId: string; dev: string; iface: string; tag: number | null; path: L2Step[] }
   const queue: Node[] = []
   const seen = new Set<string>()
+  // Spanning tree: which switch ports are blocked, computed once for this walk.
+  const blocked = stpView(topo)
 
   const floodSwitch = (sw: Device, vlan: number, skipLink: string | null, path: L2Step[]) => {
     for (const l of linksOn(topo, sw.id)) {
@@ -112,6 +148,7 @@ export function walkL2(topo: Topology, from: Device, egress: Iface, visit: (hit:
       if (port?.shutdown) continue
       const tag = egressTag(switchport(sw, here.iface), vlan)
       if (tag === undefined) continue
+      if (blocked(sw.id, here.iface, vlan)) continue
       const peer = peerOf(l, sw.id, here.iface)
       queue.push({ linkId: l.id, dev: peer.device, iface: peer.iface, tag, path })
     }
@@ -161,9 +198,11 @@ export function walkL2(topo: Topology, from: Device, egress: Iface, visit: (hit:
 
     if (dev.type === 'switch') {
       const port = dev.ifaces.find((i) => i.name === node.iface)
-      if (port?.shutdown) continue
+      if (port?.shutdown || port?.errDisabled) continue
+      if (port && opts && !portSecurityAdmits(dev, port, opts.srcMac, opts)) continue
       const vlan = ingressVlan(switchport(dev, node.iface), node.tag)
       if (vlan === null || !vlanExists(dev, vlan)) continue
+      if (blocked(dev.id, node.iface, vlan)) continue
       const key = `${dev.id}:${vlan}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -223,13 +262,24 @@ export function resolveL2(topo: Topology, state: SimState, from: Device, egress:
     // Static NAT: the router answers ARP for its global addresses on the outside interface.
     (h.iface.nat === 'outside' && !!h.device.ios?.nat?.statics.some((s) => s.global === targetIp)) ||
     (!!proxy && proxy(h))
-  const err = walkL2(topo, from, egress, (h) => {
-    if (!owns(h)) return false
-    found = h
-    return true
-  })
+  const opts: WalkOptions = { srcMac: egress.mac, state, notes: [] }
+  const err = walkL2(
+    topo,
+    from,
+    egress,
+    (h) => {
+      if (!owns(h)) return false
+      found = h
+      return true
+    },
+    opts,
+  )
   if (err) return err
-  if (!found) return `ARP: no reply for ${targetIp} — no device with that IP is reachable from ${from.name} ${egress.name}${egress.vlan ? ` (VLAN ${egress.vlan})` : ''}`
+  if (!found) {
+    // A switch dropping the frame (port security) says more than "no ARP reply".
+    if (opts.notes.length) return opts.notes[0]
+    return `ARP: no reply for ${targetIp} — no device with that IP is reachable from ${from.name} ${egress.name}${egress.vlan ? ` (VLAN ${egress.vlan})` : ''}`
+  }
   const hit: L2Hit = found
   ;(state.arp[from.id] ??= {})[targetIp] = hit.iface.mac
   // Switches on the way learn both MACs: the sender behind the port the frame came in on,
@@ -253,11 +303,17 @@ export function resolveL2(topo: Topology, state: SimState, from: Device, egress:
 }
 
 /** Every L3 interface reachable by a broadcast from `egress` (for DHCP and neighbor discovery). */
-export function broadcastDomain(topo: Topology, from: Device, egress: Iface): L2Hit[] {
+export function broadcastDomain(topo: Topology, from: Device, egress: Iface, state?: SimState): L2Hit[] {
   const hits: L2Hit[] = []
-  walkL2(topo, from, egress, (h) => {
-    if (h.device.id !== from.id) hits.push(h)
-    return false
-  })
+  walkL2(
+    topo,
+    from,
+    egress,
+    (h) => {
+      if (h.device.id !== from.id) hits.push(h)
+      return false
+    },
+    state ? { srcMac: egress.mac, state, notes: [] } : undefined,
+  )
   return hits
 }

@@ -35,7 +35,11 @@ import {
   type Session,
   type Spec,
 } from './iosBase'
+import { aclPermits } from './acl'
+import { ACL_SPECS, namedLineWithSeq } from './iosAcl'
 import { configHead, configIface, configTail, ipAddressDhcp, NET_SPECS } from './iosNet'
+import { SECURITY_SPECS } from './iosSecurity'
+import { STP_SPECS } from './iosStp'
 import { staticEgress } from './routing'
 import { DEFAULT_PORT, vlanExists } from './l2'
 import { cableProblem, getDevice, isConsolePort, isRadio, isSubIface, isSvi, isVirtual, linkActive, linkOn, linksOn, netIfaces, peerOf, physPort, portKind } from './network'
@@ -61,6 +65,7 @@ function mediaOf(dev: Device, name: string): { fiber: boolean; hardware: string;
 type IfStatus = { status: string; protocol: string }
 function ifStatus(topo: Topology, dev: Device, i: Iface): IfStatus {
   if (i.shutdown) return { status: 'administratively down', protocol: 'down' }
+  if (i.errDisabled) return { status: 'down', protocol: 'down (err-disabled)' }
   if (i.name === 'd0') return dev.ios?.wlan?.radioSsid ? { status: 'up', protocol: 'up' } : { status: 'reset', protocol: 'down' }
   if (i.name === 'lo0') return { status: 'up', protocol: 'up' }
   if (isSvi(i.name)) {
@@ -147,6 +152,7 @@ export function runningConfig(dev: Device): string[] {
   else if (v.login === 'none') out.push(' no login')
   else out.push(' login')
   if (v.transport && v.transport !== 'all') out.push(` transport input ${v.transport}`)
+  if (v.accessClass) out.push(` access-class ${v.accessClass} in`)
   out.push('!', 'end')
   return out
 }
@@ -160,7 +166,7 @@ const PRIV: Mode[] = ['priv']
 const CFG: Mode[] = ['config']
 const IF: Mode[] = ['if']
 const LINE: Mode[] = ['line']
-const SUB: Mode[] = ['config', 'if', 'line', 'ssid', 'router', 'vlan', 'dhcp']
+const SUB: Mode[] = ['config', 'if', 'line', 'ssid', 'router', 'vlan', 'dhcp', 'nacl-std', 'nacl-ext']
 const SSID: Mode[] = ['ssid']
 const AP: Device['type'][] = ['ap']
 const L3: Device['type'][] = ['router', 'firewall', 'isp']
@@ -327,7 +333,7 @@ const SPECS: Spec[] = [
       for (const i of c.dev.ifaces) {
         if (isVirtual(i.name) || isConsolePort(i.name) || isRadio(i.name)) continue
         const l = linkOn(c.topo, c.dev.id, i.name)
-        const status = i.shutdown ? 'disabled' : l && linkActive(c.topo, l) ? 'connected' : 'notconnect'
+        const status = i.shutdown ? 'disabled' : i.errDisabled ? 'err-disabled' : l && linkActive(c.topo, l) ? 'connected' : 'notconnect'
         const sp = i.switchport ?? DEFAULT_PORT
         const vlan = c.dev.type !== 'switch' ? 'routed' : sp.mode === 'trunk' ? 'trunk' : String(sp.vlan ?? 1)
         const media = mediaOf(c.dev, i.name)
@@ -746,7 +752,11 @@ const SPECS: Spec[] = [
     help: 'Shutdown the selected interface',
     run: (c) => {
       const i = c.dev.ifaces.find((x) => x.name === c.f.iface)!
-      if (i.shutdown) return []
+      // Shutting a port down also clears err-disabled and the MACs port security learned on it.
+      const wasErr = !!i.errDisabled
+      delete i.errDisabled
+      if (c.state.portSec?.[c.dev.id]) delete c.state.portSec[c.dev.id][i.name]
+      if (i.shutdown) return wasErr ? { lines: [], mutated: true } : []
       i.shutdown = true
       return {
         lines: [
@@ -970,6 +980,9 @@ const SPECS: Spec[] = [
   },
 
   ...NET_SPECS,
+  ...ACL_SPECS,
+  ...SECURITY_SPECS,
+  ...STP_SPECS,
 
   // ----- shared sub-mode navigation -----
   {
@@ -993,6 +1006,7 @@ function clearSub(f: Frame) {
   delete f.proto
   delete f.vlan
   delete f.pool
+  delete f.acl
 }
 
 function endConfig(c: Ctx): Line[] {
@@ -1272,6 +1286,10 @@ export function sshPreflight(topo: Topology, state: SimState, from: Device, host
       packet: r,
       lines: fail(fromHost ? 'Protocol major versions differ: 2 vs. 1' : '% Remote host only supports SSH version 1', `${target.name}'s ${cfg.rsaBits}-bit key is too small for SSH v2. Regenerate with modulus 2048.`),
     }
+  // `access-class N in` on the vty lines: only hosts that list permits may log in.
+  const ac = cfg.vty?.accessClass
+  if (ac && !aclPermits(target, ac, r.srcIp ?? ''))
+    return { ...refused(`${target.name}'s vty lines only accept hosts permitted by access list ${ac} (access-class ${ac} in), and ${r.srcIp} isn't one.`), packet: r }
   const auth = cfg.vty?.login ?? 'password'
   if (auth === 'password' && !cfg.vty?.password)
     return { ok: false, packet: r, lines: [L('Password required, but none set', 'err'), closed(ip), tip(`Configure ${target.name}: line vty 0 4 → login local (with a username), or set a line password.`)] }
@@ -1440,6 +1458,9 @@ export function runIos(c: Ctx, raw: string): CommandResult {
     return runIos({ ...c, f: tmp }, raw.trim().slice(tokens[0].length).trim())
   }
 
+  // Inside a named access list, a line may start with its sequence number: 15 deny …
+  const seqLine = namedLineWithSeq(c, tokens)
+  if (seqLine) return wrap(seqLine)
   let r = resolve(specsFor(c.dev, c.f.mode), tokens)
   // In interface/line mode, a global command drops back to config mode and runs there (like IOS).
   if (!('spec' in r) && c.f.mode !== 'user' && c.f.mode !== 'priv' && c.f.mode !== 'config') {
@@ -1497,5 +1518,7 @@ export function iosPrompt(name: string, mode: Mode): string {
     router: `${name}(config-router)#`,
     vlan: `${name}(config-vlan)#`,
     dhcp: `${name}(dhcp-config)#`,
+    'nacl-std': `${name}(config-std-nacl)#`,
+    'nacl-ext': `${name}(config-ext-nacl)#`,
   }[mode]
 }

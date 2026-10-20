@@ -84,6 +84,18 @@ const portIdOf = (d: Device, port: string) => 128 * 1000 + d.ifaces.findIndex((i
 /** Bridge IDs compare by priority, then MAC. */
 const bidLess = (a: StpSwitch, b: StpSwitch) => (a.priority !== b.priority ? a.priority < b.priority : a.mac < b.mac)
 
+/** A candidate path to the root, as seen from one of a switch's ports. */
+type RootPath = { cost: number; viaBid: StpSwitch; viaPortId: number; ownPortId: number; port: string }
+
+/** Root port choice: lowest cost, then neighbor bridge ID, then neighbor port ID, then own port ID. */
+function betterRootPath(a: RootPath, b: RootPath | undefined): boolean {
+  if (!b) return true
+  if (a.cost !== b.cost) return a.cost < b.cost
+  if (a.viaBid !== b.viaBid) return bidLess(a.viaBid, b.viaBid)
+  if (a.viaPortId !== b.viaPortId) return a.viaPortId < b.viaPortId
+  return a.ownPortId < b.ownPortId
+}
+
 function compute(topo: Topology, vlan: number): StpTree | null {
   const switches = topo.devices.filter((d) => d.type === 'switch' && (vlan === 1 || d.ios?.vlans?.[vlan] !== undefined))
   if (!switches.length) return null
@@ -107,8 +119,7 @@ function compute(topo: Topology, vlan: number): StpTree | null {
   root.rootCost = 0
   // Dijkstra over switches: reaching S through its port P costs P's cost.
   const done = new Set<string>()
-  type Best = { cost: number; viaBid: StpSwitch; viaPortId: number; ownPortId: number; port: string }
-  const best = new Map<string, Best>()
+  const best = new Map<string, RootPath>()
   while (done.size < info.size) {
     let u: StpSwitch | null = null
     for (const s of info.values()) if (!done.has(s.id) && s.rootCost < Infinity && (!u || s.rootCost < u.rootCost)) u = s
@@ -118,13 +129,8 @@ function compute(topo: Topology, vlan: number): StpTree | null {
       if (!sg.peer || sg.peer.sw.id !== u.id) continue
       const s = info.get(sg.sw.id)!
       if (done.has(s.id)) continue
-      const cand: Best = { cost: u.rootCost + portCost(sg.port), viaBid: u, viaPortId: portIdOf(sg.peer.sw, sg.peer.port.name), ownPortId: portIdOf(sg.sw, sg.port.name), port: sg.port.name }
-      const cur = best.get(s.id)
-      const better =
-        !cur ||
-        cand.cost < cur.cost ||
-        (cand.cost === cur.cost && (bidLess(cand.viaBid, cur.viaBid) || (cand.viaBid === cur.viaBid && (cand.viaPortId < cur.viaPortId || (cand.viaPortId === cur.viaPortId && cand.ownPortId < cur.ownPortId))))))
-      if (better) {
+      const cand: RootPath = { cost: u.rootCost + portCost(sg.port), viaBid: u, viaPortId: portIdOf(sg.peer.sw, sg.peer.port.name), ownPortId: portIdOf(sg.sw, sg.port.name), port: sg.port.name }
+      if (betterRootPath(cand, best.get(s.id))) {
         best.set(s.id, cand)
         s.rootCost = cand.cost
         s.rootPort = cand.port
@@ -182,6 +188,15 @@ export function spanningTree(topo: Topology, vlan: number): StpTree | null {
 
 /** Whether STP blocks a switch port in a VLAN (frames neither come in nor go out). */
 export function stpBlocks(topo: Topology, switchId: string, port: string, vlan: number): boolean {
-  const p = spanningTree(topo, vlan)?.switches.get(switchId)?.ports.find((x) => x.port === port)
-  return !!p && !p.forwarding
+  return stpView(topo)(switchId, port, vlan)
+}
+
+/** A blocked-port check that reuses one set of trees across all the ports a frame walk crosses. */
+export function stpView(topo: Topology): (switchId: string, port: string, vlan: number) => boolean {
+  const trees = new Map<number, StpTree | null>()
+  return (switchId, port, vlan) => {
+    if (!trees.has(vlan)) trees.set(vlan, spanningTree(topo, vlan))
+    const p = trees.get(vlan)?.switches.get(switchId)?.ports.find((x) => x.port === port)
+    return !!p && !p.forwarding
+  }
 }
