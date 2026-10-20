@@ -389,7 +389,7 @@ export function roomLayout(topo: Topology): RoomLayout {
     return h && (h.type === 'pc' || h.type === 'laptop') ? h : undefined
   }
   // APs aren't on desks: on the ceiling in offices, on the outside wall by balconies.
-  const inCubicle = (d: Device) => d.type === 'pc' || d.type === 'laptop' || d.type === 'mobile' || (d.type === 'phone' && !deskHost(d))
+  const inCubicle = (d: Device) => d.type === 'pc' || d.type === 'laptop' || d.type === 'mobile' || d.type === 'attacker' || (d.type === 'phone' && !deskHost(d))
 
   // Offices: one cubicle per desk device, in rows facing the door (+z), deeper rows behind.
   const cubicles: Cubicle[] = []
@@ -407,7 +407,7 @@ export function roomLayout(topo: Topology): RoomLayout {
       const p = PANEL[d.type]
       // A PC tower stands on the left of the desk next to its monitor; laptops and APs sit in the middle.
       const px = d.type === 'pc' ? x - DESK.w / 2 + 0.2 : x
-      const pz = d.type === 'laptop' || d.type === 'mobile' ? z - 0.2 : z - 0.12
+      const pz = d.type === 'laptop' || d.type === 'mobile' || d.type === 'attacker' ? z - 0.2 : z - 0.12
       placements.push({ deviceId: d.id, station: 'desk', x, z, panel: { x: px, y: DESK.h + p.h / 2, z: pz, ...p }, ports: portSpots(d) })
       const last = col === cols - 1 || k === here.length - 1
       cubicles.push({ deviceId: d.id, x, back, rightWall: last })
