@@ -83,6 +83,7 @@ export const BASE_ROOMS: RoomDef[] = [
   { id: 'it', label: 'IT office', kind: 'office' },
   { id: 'accounting', label: 'Accounting', kind: 'office' },
   { id: 'sales', label: 'Sales', kind: 'office' },
+  { id: 'seclab', label: 'Security lab', kind: 'office' },
 ]
 export const DEFAULT_OFFICE: RoomId = 'it'
 
@@ -207,6 +208,7 @@ const PANEL: Record<DeviceType, { w: number; h: number }> = {
   server: { w: 0.44, h: 0.18 },
   pc: { w: 0.2, h: 0.42 },
   laptop: { w: 0.34, h: 0.022 },
+  attacker: { w: 0.34, h: 0.022 },
   ap: { w: 0.26, h: 0.05 },
   patch: { w: 0.44, h: 0.13 },
   isp: { w: 0.44, h: 0.1 }, // never placed: the ISP is outside the building
@@ -225,7 +227,7 @@ export function rackHasRoom(heights: number[], rack = 0): boolean {
 }
 
 /** Devices that live in offices (desks, printer stands, on a desk) instead of in racks. */
-export const onDesk = (d: Pick<Device, 'type'>) => ['pc', 'laptop', 'mobile', 'ap', 'printer', 'phone'].includes(d.type)
+export const onDesk = (d: Pick<Device, 'type'>) => ['pc', 'laptop', 'mobile', 'ap', 'printer', 'phone', 'attacker'].includes(d.type)
 
 /** A room's colour: the one the player picked, or the default. */
 export function roomColor(topo: Topology, id: RoomId): string {

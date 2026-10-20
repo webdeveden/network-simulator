@@ -626,12 +626,98 @@ const acls: Topic = {
   ],
 }
 
+// ---------- cybersecurity lab: layer-2 attacks and defences ----------
+
+const attackIntro: Topic = {
+  id: 'redteam',
+  title: 'The attacker (Kali) box',
+  body: [
+    'This is a rogue host for the security lab, like an insider\'s laptop or a hijacked PC plugged into your network. Cable its eth0 into a switch access port, then open its terminal and type attacks by name.',
+    'Everything here is simulated: no real traffic leaves the lab. Each attack reads your actual switch configuration and tells you whether it would succeed and, if it is stopped, which Cisco feature stopped it.',
+    'The point is defensive: run an attack, watch it work, then add the right protection on the switch (from its Learn tab) and run it again to see it blocked.',
+  ],
+  examples: [{ title: 'See the menu, then scan', commands: ['help', 'whoami', 'scan'] }],
+}
+
+const macFloodLesson: Topic = {
+  id: 'atk-macflood',
+  title: 'Attack: MAC flooding (CAM overflow)',
+  body: [
+    'A switch forwards frames using its MAC address table (CAM). The table is finite. macof floods the switch with thousands of frames with random source MACs until the table is full.',
+    'Once full, the switch "fails open": it no longer knows where anything is, so it floods every frame out every port — like a hub. The attacker now sees traffic meant for other devices and can sniff passwords.',
+    'Defence: port security on access ports limits how many MACs a port may use. The flood trips the limit and the port err-disables before the table overflows.',
+  ],
+  examples: [{ title: 'Run it from the attacker box', commands: ['scan', 'mac-flood'] }],
+}
+
+const arpSpoofLesson: Topic = {
+  id: 'atk-arpspoof',
+  title: 'Attack: ARP spoofing (man-in-the-middle)',
+  body: [
+    'Hosts find the gateway\'s MAC with ARP, and they believe any answer. The attacker sends forged ARP replies claiming the gateway\'s IP is at the attacker\'s MAC, so victims send their traffic to the attacker, who relays it on — a man-in-the-middle who can read or change everything.',
+    'Defence: Dynamic ARP Inspection (DAI). With DHCP snooping building a table of which IP belongs to which MAC on which port, DAI checks every ARP on untrusted ports and drops any that lie. The attacker doesn\'t own the gateway IP, so its forged ARP is dropped.',
+  ],
+  examples: [{ title: 'Run it from the attacker box', commands: ['scan', 'arp-spoof'] }],
+}
+
+const dhcpLesson: Topic = {
+  id: 'atk-dhcp',
+  title: 'Attack: DHCP starvation and rogue DHCP',
+  body: [
+    'DHCP starvation floods the server with DISCOVERs using spoofed MACs until the address pool is empty, so real users can no longer get an address — a denial of service.',
+    'A rogue DHCP server then answers instead, handing clients the attacker as their default gateway and DNS: a man-in-the-middle for everyone who renews their lease.',
+    'Defence: DHCP snooping. The switch trusts DHCP server replies only on the ports you mark trusted (the uplink to the real server). On every other port it drops rogue server messages and rate-limits DISCOVER floods.',
+  ],
+  examples: [{ title: 'Run them from the attacker box', commands: ['scan', 'dhcp-starve', 'rogue-dhcp'] }],
+}
+
+const rogueSwitchLesson: Topic = {
+  id: 'atk-rogue',
+  title: 'Attack: rogue switch / STP root takeover',
+  body: [
+    'Spanning tree picks the switch with the lowest bridge ID as the root, and all paths point toward it. An attacker that plugs in a switch (or software like yersinia) announcing priority 0 becomes the root, so traffic reroutes through it — ready to be intercepted or disrupted.',
+    'Defence: BPDU guard on access ports. A real end device never sends BPDUs, so if one arrives on a PortFast access port, the switch err-disables the port at once.',
+  ],
+  examples: [{ title: 'Run it from the attacker box', commands: ['scan', 'rogue-switch'] }],
+}
+
+const vlanHopLesson: Topic = {
+  id: 'atk-vlanhop',
+  title: 'Attack: VLAN hopping (double tagging)',
+  body: [
+    'VLANs are supposed to isolate traffic. In a double-tagging attack, the attacker (sitting in the trunk\'s native VLAN) sends a frame with two 802.1Q tags. The first switch strips the outer tag (the native VLAN is untagged on the trunk) and forwards the still-tagged inner frame across the trunk into the victim VLAN — a one-way jump past the segmentation.',
+    'Defence: never use a VLAN that hosts live in as a trunk\'s native VLAN. Set the native VLAN to a dedicated unused VLAN and prune it from the trunk, so the outer tag never matches and is never stripped.',
+  ],
+  examples: [{ title: 'Run it from the attacker box', commands: ['scan', 'vlan-hop'] }],
+}
+
+const ATTACK_LESSONS = [macFloodLesson, arpSpoofLesson, dhcpLesson, rogueSwitchLesson, vlanHopLesson]
+
+const l2Hardening: Topic = {
+  id: 'l2harden',
+  title: 'Hardening against layer-2 attacks',
+  body: [
+    'Access-layer switches are the front line against insider and rogue-device attacks (try them from the Attacker box in the security lab). A few features stop the classic ones:',
+    'Port security — one (or a few) MAC per access port, violation shutdown: stops MAC flooding and DHCP starvation.',
+    'DHCP snooping — trust DHCP only on the uplink: stops rogue DHCP servers and starvation, and builds the table DAI needs.',
+    'Dynamic ARP Inspection — check ARP against that table: stops ARP spoofing / man-in-the-middle.',
+    'BPDU guard on PortFast access ports: stops a rogue switch taking over spanning tree.',
+    'A dedicated unused native VLAN on trunks, plus shutting unused ports: stops VLAN hopping. Put unused ports in a black-hole VLAN and shut them.',
+  ],
+  examples: [
+    { title: 'Lock down an access port', commands: ['enable', 'configure terminal', 'interface fa0/1', 'switchport mode access', 'switchport port-security', 'switchport port-security violation shutdown', 'spanning-tree portfast', 'spanning-tree bpduguard enable', 'end'] },
+    { title: 'DHCP snooping + DAI, trust the uplink', commands: ['enable', 'configure terminal', 'ip dhcp snooping', 'ip dhcp snooping vlan 1', 'ip arp inspection vlan 1', 'interface g0/1', 'ip dhcp snooping trust', 'ip arp inspection trust', 'end', 'show ip dhcp snooping'] },
+    { title: 'Move the trunk native VLAN out of harm', commands: ['enable', 'configure terminal', 'vlan 999', 'name UNUSED-NATIVE', 'interface g0/1', 'switchport trunk native vlan 999', 'end'] },
+  ],
+}
+
 const TOPICS: Record<DeviceType, Topic[]> = {
   pc: [ipBasics, gateway, dhcpClient, testing, cabling, ports, sshClient],
   laptop: [wifi, ipBasics, gateway, dhcpClient, testing, sshClient],
   mobile: [wifi, ipBasics, gateway, dhcpClient, testing],
+  attacker: [attackIntro, ...ATTACK_LESSONS, ipBasics],
   server: [serverRole, ipBasics, gateway, testing, ports],
-  switch: [switching, vlans, trunks, switchMgmt, cablingIos, structured, iosModes, portAdmin, neighbors, saving],
+  switch: [switching, vlans, trunks, switchMgmt, cablingIos, structured, iosModes, portAdmin, neighbors, saving, l2Hardening],
   ap: [apRole, apSecure, wifiSecurity, iosModes, saving],
   router: [routing, cablingIos, iosModes, ifaceConfig, staticRoutes, dynamicRouting, roas, acls, dhcpServer, nat, bgp, troubleshooting, hardening, saving],
   firewall: [firewalling, fwRules, iosModes, ifaceConfig, staticRoutes, dynamicRouting, acls, nat, saving],

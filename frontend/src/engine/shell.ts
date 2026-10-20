@@ -7,6 +7,7 @@ import { execute, type CommandResult } from './commands'
 import type { SimState } from './forwarding'
 import { answerPending, complete, iosPrompt, isIos, parseSshArgs, pendingPrompt, runIos, sshConnect, type Session } from './ios'
 import { getDevice, linkOn } from './network'
+import { runKali } from './kali'
 import type { Device, Topology } from './types'
 
 export type { Session } from './ios'
@@ -29,6 +30,7 @@ export function promptOf(topo: Topology, s: Session): { text: string; secret: bo
   const dev = active(topo, s)
   if (!dev) return { text: '(no device)>', secret: false }
   const f = s.frames[s.frames.length - 1]
+  if (dev.type === 'attacker') return { text: `┌──(root㉿${dev.name})-[~]\n└─# `, secret: false }
   return { text: isIos(dev) ? iosPrompt(dev.name, f.mode) : `${dev.name}:~$`, secret: false }
 }
 
@@ -43,6 +45,7 @@ export function runLine(topo: Topology, state: SimState, s: Session, input: stri
   if (!dev) return { lines: [{ text: 'No device selected', kind: 'err' }] }
   const f = s.frames[s.frames.length - 1]
   if (dev.type === 'patch') return { lines: [{ text: `${dev.name} is a patch panel: passive wiring, no console. Front port N connects straight through to rear port N.`, kind: 'muted' }] }
+  if (dev.type === 'attacker') return runKali(topo, dev, input)
   if (isIos(dev)) return runIos({ topo, state, s, f, dev, promptLen }, input)
 
   const [cmd, ...rest] = input.trim().split(/\s+/)

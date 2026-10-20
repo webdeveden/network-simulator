@@ -4,6 +4,8 @@ import { Terminal } from '@xterm/xterm'
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { Line, LineKind } from '../../engine/commands'
 import { useWorkspace } from '../../stores/workspace'
+import { getDevice } from '../../engine/network'
+import { kaliBanner } from '../../engine/kali'
 
 /** Pinned to one device (console windows). Without it, follows the selected device. */
 const props = defineProps<{ deviceId?: string }>()
@@ -119,10 +121,15 @@ onMounted(() => {
   term.loadAddon(fit)
   term.open(el.value!)
   fit.fit()
-  writeLines([
-    { text: 'NetSim terminal. PCs/servers: type "help". Routers, switches, firewalls: Cisco-style IOS, type "?".', kind: 'info' },
-    { text: 'Tab completes IOS keywords, ↑/↓ history, Ctrl+Z leaves config mode, Ctrl+L clears.', kind: 'muted' },
-  ])
+  const dev0 = id() ? getDevice(ws.topo, id()!) : ws.selectedDevice
+  writeLines(
+    dev0?.type === 'attacker'
+      ? kaliBanner(dev0)
+      : [
+          { text: 'NetSim terminal. PCs/servers: type "help". Routers, switches, firewalls: Cisco-style IOS, type "?".', kind: 'info' },
+          { text: 'Tab completes IOS keywords, ↑/↓ history, Ctrl+Z leaves config mode, Ctrl+L clears.', kind: 'muted' },
+        ],
+  )
   term.write(prompt())
   term.onData(onData)
   term.attachCustomKeyEventHandler((e) => {

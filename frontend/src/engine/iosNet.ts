@@ -11,6 +11,7 @@ import { bgpSessions, bgpTable, classfulNetwork, classfulPrefix, configured, osp
 import { ciscoMac, conf, fail, ifaceName, L, longName, maskToPrefix, tip, type Ctx, type Mode, type Result, type Spec } from './iosBase'
 import { aclConfig, aclIface } from './iosAcl'
 import { securityIface } from './iosSecurity'
+import { snoopConfig, snoopIface } from './iosSnoop'
 import { stpConfig, stpIface } from './iosStp'
 import type { Device, Iface, NetworkStatement, Switchport } from './types'
 
@@ -1129,6 +1130,7 @@ export function configHead(dev: Device): string[] {
   const out: string[] = []
   const c = dev.ios ?? {}
   out.push(...stpConfig(dev))
+  out.push(...snoopConfig(dev))
   for (const [v, name] of Object.entries(c.vlans ?? {})) out.push(`vlan ${v}`, ` name ${name}`, '!')
   for (const e of c.dhcp?.excluded ?? []) out.push(`ip dhcp excluded-address ${e.from}${e.to !== e.from ? ' ' + e.to : ''}`)
   if (c.dhcp?.excluded.length) out.push('!')
@@ -1161,7 +1163,7 @@ export function configIface(dev: Device, i: Iface): string[] {
   }
   out.push(...aclIface(i))
   // Spanning-tree port settings apply whatever the switchport mode (or none set yet).
-  if (dev.type === 'switch') out.push(...stpIface(i))
+  if (dev.type === 'switch') out.push(...stpIface(i), ...snoopIface(i))
   if (i.helper) out.push(` ip helper-address ${i.helper}`)
   if (i.nat) out.push(` ip nat ${i.nat}`)
   if (i.ospfCost) out.push(` ip ospf cost ${i.ospfCost}`)

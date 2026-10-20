@@ -157,6 +157,14 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
     layer: 3,
     description: "Your Internet provider, outside the building (2D map only). Routes like a router; 8.8.8.8 on lo0 stands for 'the Internet'.",
   },
+  attacker: {
+    label: 'Attacker (Kali)',
+    prefix: 'KALI',
+    cost: 0,
+    ifaces: ['eth0', 'wlan0'],
+    layer: 3,
+    description: 'A rogue host for the security lab: a Kali-style box. Cable eth0 into a switch port, then open its terminal to run simulated layer-2 attacks and see which of your defences stop them.',
+  },
   firewall: {
     label: 'Firewall',
     prefix: 'FW',
@@ -168,7 +176,7 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
   },
 }
 
-export const isHost = (d: Device) => ['pc', 'laptop', 'mobile', 'server', 'printer', 'phone'].includes(d.type)
+export const isHost = (d: Device) => ['pc', 'laptop', 'mobile', 'server', 'printer', 'phone', 'attacker'].includes(d.type)
 /** Wireless-only clients: they join Wi-Fi and never take a cable. */
 export const isWifiClient = (d: Pick<Device, 'type'>) => d.type === 'laptop' || d.type === 'mobile'
 /** Layer 2 devices that forward frames between all their links. */

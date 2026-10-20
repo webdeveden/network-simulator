@@ -39,6 +39,7 @@ import { aclPermits } from './acl'
 import { ACL_SPECS, namedLineWithSeq } from './iosAcl'
 import { configHead, configIface, configTail, ipAddressDhcp, NET_SPECS } from './iosNet'
 import { SECURITY_SPECS } from './iosSecurity'
+import { SNOOP_SPECS } from './iosSnoop'
 import { STP_SPECS } from './iosStp'
 import { staticEgress } from './routing'
 import { DEFAULT_PORT, vlanExists } from './l2'
@@ -983,6 +984,7 @@ const SPECS: Spec[] = [
   ...ACL_SPECS,
   ...SECURITY_SPECS,
   ...STP_SPECS,
+  ...SNOOP_SPECS,
 
   // ----- shared sub-mode navigation -----
   {

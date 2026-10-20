@@ -1,4 +1,4 @@
-export type DeviceType = 'pc' | 'laptop' | 'server' | 'switch' | 'ap' | 'router' | 'firewall' | 'patch' | 'isp' | 'modem' | 'printer' | 'phone' | 'mobile'
+export type DeviceType = 'pc' | 'laptop' | 'server' | 'switch' | 'ap' | 'router' | 'firewall' | 'patch' | 'isp' | 'modem' | 'printer' | 'phone' | 'mobile' | 'attacker'
 
 export interface Iface {
   name: string

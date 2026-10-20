@@ -14,6 +14,7 @@ const GROUPS: { id: string; label: string; types: DeviceType[] }[] = [
   { id: 'end', label: 'End devices', types: ['pc', 'laptop', 'mobile', 'phone', 'printer'] },
   { id: 'servers', label: 'Servers', types: ['server'] },
   { id: 'internet', label: 'Internet', types: ['isp'] },
+  { id: 'security', label: 'Security lab', types: ['attacker'] },
 ]
 const groups = computed(() => GROUPS.map((g) => ({ ...g, types: g.types.filter((t) => ws.palette.includes(t)) })).filter((g) => g.types.length))
 

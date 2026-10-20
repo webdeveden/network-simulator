@@ -48,6 +48,7 @@ Supported: `ip address`, `shutdown`, `description`, `ip route`, `hostname`, `ena
   - First match wins, with the implicit deny at the end. ACLs are stateless, so replies are checked too.
   - `show access-lists` counts matches per line. The console warns about subnet masks used as wildcards, lists with only denies, and lines that can never match.
 - **Port security:** `switchport port-security` (the port must be `switchport mode access` first), `maximum`, `violation shutdown|restrict|protect`, `mac-address sticky` or a static `mac-address`. A violation err-disables the port (`shutdown` / `no shutdown` recovers it). `show port-security [interface|address]`.
+- **DHCP snooping & Dynamic ARP Inspection:** `ip dhcp snooping` (+ `vlan`, interface `ip dhcp snooping trust`) only believes DHCP server replies on trusted uplinks and drops/rate-limits the rest; `ip arp inspection vlan N` (+ `ip arp inspection trust`) drops forged ARP. `show ip dhcp snooping`, `show ip arp inspection`. These stop the rogue-DHCP, DHCP-starvation and ARP-spoofing attacks in the security lab.
 - **Spanning tree:**
   - One tree per VLAN (PVST+, or `spanning-tree mode rapid-pvst`). The lowest bridge ID becomes root, root ports take the cheapest path (cost 19 Fa, 4 Gi), and redundant ports block. Traffic follows the tree, and a blocked port takes over when a link fails.
   - Commands: `spanning-tree vlan N priority` (steps of 4096) or `root primary|secondary`, `spanning-tree portfast`, `bpduguard enable` (a switch plugged in err-disables the port), `spanning-tree cost`.
@@ -192,11 +193,26 @@ Add an entry to `MISSIONS` in `backend/app/missions.py`. Each entry has:
 
 - hints
 
+## Cybersecurity lab (simulated, defensive)
+
+Add an **Attacker (Kali)** device (palette → Security lab) to a **Security lab** room, cable its `eth0` into a switch access port, and open its terminal. It's a Kali-style box that runs **simulated** layer-2 attacks by name — nothing real leaves the lab. Each attack reads your actual switch configuration and reports whether it would succeed and, if stopped, which Cisco feature stopped it:
+
+| Attack (type in the Kali terminal) | What it does | Defence that stops it |
+|---|---|---|
+| `mac-flood` | CAM-table overflow → switch floods all traffic (sniffing) | port security |
+| `arp-spoof` | ARP poisoning → man-in-the-middle | Dynamic ARP Inspection (+ DHCP snooping) |
+| `dhcp-starve` | drains the DHCP pool (denial of service) | DHCP snooping (and port security) |
+| `rogue-dhcp` | fake DHCP server → attacker becomes the gateway | DHCP snooping (trust the uplink only) |
+| `rogue-switch` | STP root takeover → reroute traffic | BPDU guard on access ports |
+| `vlan-hop` | double-tagging into another VLAN | dedicated unused native VLAN |
+
+Run `scan` first to see where you're plugged in and which defences are present. The **Learn tab** on the attacker explains each attack (what, why, how to defend); the switch's Learn tab has **Hardening against layer-2 attacks** with the exact commands. Workflow: run an attack, watch it work, harden the switch, run it again to see it blocked.
+
 ## Roadmap
 
 - Blue Team scenarios: attack traffic, threat map, log analysis, patching SQLi/XSS
 - IPv6 (addressing, SLAAC, static and OSPFv3 routing)
-- EtherChannel, HSRP, DHCP snooping
+- EtherChannel, HSRP
 - DNS
 - Redistribution between routing protocols, OSPF multi-area rules (area 0 backbone)
 - Leaderboards

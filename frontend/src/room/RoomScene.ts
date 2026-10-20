@@ -101,6 +101,7 @@ const TYPE_COLOR: Record<string, string> = {
   server: '#b48cff',
   pc: '#c9d6e8',
   laptop: '#c9d6e8',
+  attacker: '#ff4d5e',
   ap: '#39ff88',
 }
 
@@ -1753,7 +1754,7 @@ export class RoomScene {
         g.add(leg)
       }
     if (d.type === 'pc') this.buildPc(g, d, p, legMat)
-    else if (d.type === 'laptop') this.buildLaptop(g, d, p)
+    else if (d.type === 'laptop' || d.type === 'attacker') this.buildLaptop(g, d, p)
     else if (d.type === 'mobile') this.buildMobileFlat(g, d, p)
     else this.buildAp(g, d, p)
     this.world.add(g)
