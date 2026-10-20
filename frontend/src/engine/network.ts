@@ -1,4 +1,5 @@
 import { isLoopback, parseCidr } from './ip'
+import { serviceProblem } from './wlc'
 import type { CableChoice, CableType, Device, DeviceType, Iface, Link, LinkEnd, Topology } from './types'
 
 export interface DeviceInfo {
@@ -156,6 +157,14 @@ export const DEVICE_CATALOG: Record<DeviceType, DeviceInfo> = {
     fiber: ['pon0'],
     layer: 3,
     description: "Your Internet provider, outside the building (2D map only). Routes like a router; 8.8.8.8 on lo0 stands for 'the Internet'.",
+  },
+  wlc: {
+    label: 'WLC (wireless controller)',
+    prefix: 'WLC',
+    cost: 600,
+    ifaces: ['g0/0', 'g0/1', 'con0'],
+    layer: 2,
+    description: 'Wireless LAN Controller. Cable it to the switched network; access points that can reach it auto-join (lightweight) and broadcast the WLANs you define on its dashboard (select it to open the WLC panel).',
   },
   attacker: {
     label: 'Attacker (Kali)',
@@ -417,7 +426,7 @@ export function linkActive(topo: Topology, link: Link): boolean {
   if (!link.up || link.cable === 'console' || cableProblem(topo, link)) return false
   if (link.wifi) {
     const ap = getDevice(topo, link.a.device)
-    if (!ap || wifiProblem(ap, link.wifi.ssid, link.wifi.key) !== null) return false
+    if (!ap || serviceProblem(topo, ap, link.wifi.ssid, link.wifi.key) !== null) return false
   }
   return [link.a, link.b].every((end) => {
     const i = getDevice(topo, end.device)?.ifaces.find((x) => x.name === end.iface)

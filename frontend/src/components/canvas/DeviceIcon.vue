@@ -68,6 +68,11 @@ defineProps<{ type: DeviceType; size?: number }>()
       <ellipse cx="16" cy="16" rx="13" ry="9" />
       <path d="M16 9v5M14 12l2 2 2-2M16 23v-5M14 20l2-2 2 2M8 16h5M11 14l2 2-2 2M24 16h-5M21 14l-2 2 2 2" stroke-width="1.3" />
     </template>
+    <template v-else-if="type === 'wlc'">
+      <rect x="2" y="12" width="28" height="9" rx="1.5" />
+      <circle cx="7" cy="16.5" r="1" fill="currentColor" />
+      <path d="M16 11V6M12.5 8.5a5 5 0 017 0M10.5 6.5a8 8 0 0111 0" stroke-width="1.2" fill="none" />
+    </template>
     <template v-else-if="type === 'attacker'">
       <rect x="6" y="6" width="20" height="14" rx="1" />
       <path d="M4 23h24l-2-3H6z" />

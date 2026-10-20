@@ -10,7 +10,7 @@ const ws = useWorkspace()
 
 /** The device list, grouped the way a network diagram legend is. */
 const GROUPS: { id: string; label: string; types: DeviceType[] }[] = [
-  { id: 'network', label: 'Network devices', types: ['router', 'switch', 'firewall', 'ap', 'patch', 'modem'] },
+  { id: 'network', label: 'Network devices', types: ['router', 'switch', 'firewall', 'wlc', 'ap', 'patch', 'modem'] },
   { id: 'end', label: 'End devices', types: ['pc', 'laptop', 'mobile', 'phone', 'printer'] },
   { id: 'servers', label: 'Servers', types: ['server'] },
   { id: 'internet', label: 'Internet', types: ['isp'] },

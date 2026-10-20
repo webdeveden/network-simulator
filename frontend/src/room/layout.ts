@@ -205,6 +205,7 @@ const PANEL: Record<DeviceType, { w: number; h: number }> = {
   router: { w: 0.44, h: 0.13 },
   firewall: { w: 0.44, h: 0.13 },
   switch: { w: 0.44, h: 0.1 },
+  wlc: { w: 0.44, h: 0.09 },
   server: { w: 0.44, h: 0.18 },
   pc: { w: 0.2, h: 0.42 },
   laptop: { w: 0.34, h: 0.022 },

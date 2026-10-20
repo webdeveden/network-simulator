@@ -1,4 +1,4 @@
-export type DeviceType = 'pc' | 'laptop' | 'server' | 'switch' | 'ap' | 'router' | 'firewall' | 'patch' | 'isp' | 'modem' | 'printer' | 'phone' | 'mobile' | 'attacker'
+export type DeviceType = 'pc' | 'laptop' | 'server' | 'switch' | 'ap' | 'router' | 'firewall' | 'patch' | 'isp' | 'modem' | 'printer' | 'phone' | 'mobile' | 'attacker' | 'wlc'
 
 export interface Iface {
   name: string
@@ -82,6 +82,20 @@ export interface FwRule {
   port?: number
 }
 
+/** A WLAN defined on a Wireless LAN Controller (the GUI dashboard). Lightweight APs that join the WLC broadcast these. */
+export interface WlcWlan {
+  id: number
+  profile: string
+  ssid: string
+  security: 'open' | 'wpa2'
+  psk?: string
+  /** VLAN the WLAN's clients land in. */
+  vlan?: number
+  enabled: boolean
+  /** Broadcast the SSID (shows in scans). */
+  broadcast: boolean
+}
+
 export interface Device {
   id: string
   name: string
@@ -108,6 +122,8 @@ export interface Device {
   rack?: number
   /** 3D room: position inside that rack, top first. Set when devices are rearranged by dragging. */
   slot?: number
+  /** Wireless LAN Controller dashboard: the WLANs it manages (type 'wlc'). */
+  wlc?: { wlans: WlcWlan[] }
   /** Cisco-style settings for routers, switches and firewalls. */
   ios?: IosConfig
 }

@@ -46,6 +46,7 @@ export function runLine(topo: Topology, state: SimState, s: Session, input: stri
   const f = s.frames[s.frames.length - 1]
   if (dev.type === 'patch') return { lines: [{ text: `${dev.name} is a patch panel: passive wiring, no console. Front port N connects straight through to rear port N.`, kind: 'muted' }] }
   if (dev.type === 'attacker') return runKali(topo, dev, input)
+  if (dev.type === 'wlc') return { lines: [{ text: `${dev.name} is a wireless controller: configure it on the WLC dashboard (select it in the side panel), not the console.`, kind: 'muted' }] }
   if (isIos(dev)) return runIos({ topo, state, s, f, dev, promptLen }, input)
 
   const [cmd, ...rest] = input.trim().split(/\s+/)

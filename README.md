@@ -80,6 +80,10 @@ The rules live in `src/engine/network.ts` (`cableFor`, `cableProblem`); `cables.
 - **Switch and router ports:** switches are 48-port access switches: `fa0/1–fa0/48` in two rows of 24 (odd on top), copper gigabit `g0/3–g0/6`, fiber `g0/1–g0/2`. Routers have copper `g0/0–g0/3` and `g0/5`, plus fiber `g0/4`.
 - **Older networks:** networks saved before a port existed get it added when they load. Their existing ports, addresses and cables are kept.
 
+### Wireless LAN Controller (WLC)
+
+Add a **WLC** (Network devices) and cable it into the switched network. Any access point that can reach it over the wire **auto-joins** (CAPWAP, simplified) and goes **lightweight**: instead of its local `dot11` config it broadcasts the WLANs you define centrally. Select the WLC to open its **dashboard** (side panel) — a Cisco-WLC-style WLANs list where you create an SSID, pick **Open** or **WPA2-PSK** (with a passphrase), set the client VLAN, and enable it. Laptops/phones then `wifi connect <ssid>` through any lightweight AP. An AP with no controller in reach stays **autonomous** and uses its local `dot11 ssid` / `interface Dot11Radio0` config as before. This is the Cisco split-MAC model (AireOS / Catalyst 9800). The WLC's and AP's **Learn** tabs explain it.
+
 ### Wi-Fi
 
 Access points (AP) are layer 2 bridges. They have a wired uplink `g0/0` and a radio, `Dot11Radio0`, configured Aironet-style: `dot11 ssid OFFICE` → `authentication open`, `authentication key-management wpa version 2`, `wpa-psk ascii <key>`, `guest-mode`. Then `interface Dot11Radio0` → `encryption mode ciphers aes-ccm`, `ssid OFFICE`. `show dot11 associations` lists the clients.

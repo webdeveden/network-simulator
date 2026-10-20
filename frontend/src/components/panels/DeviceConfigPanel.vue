@@ -9,6 +9,7 @@ import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isConsolePort, isHost,
 import { useWorkspace } from '../../stores/workspace'
 import DeviceIcon from '../canvas/DeviceIcon.vue'
 import RackPanel from './RackPanel.vue'
+import WlcPanel from './WlcPanel.vue'
 
 const ws = useWorkspace()
 
@@ -203,8 +204,10 @@ function doPing() {
       </div>
 
       <p v-if="ws.selectedDevice.type === 'ap'" class="mt-1 text-[10px] text-dim">
-        Configure Wi-Fi from the console: dot11 ssid, then interface Dot11Radio0.
+        Autonomous Wi-Fi from the console: dot11 ssid, then interface Dot11Radio0. Or cable a WLC in and this AP joins it (lightweight).
       </p>
+
+      <WlcPanel v-if="ws.selectedDevice.type === 'wlc'" :device-id="ws.selectedDevice.id" />
       <template v-if="isHost(ws.selectedDevice)">
         <h3 class="section">default gateway</h3>
         <input v-model="gwDraft" class="input" placeholder="router IP on this subnet" @keydown.enter="applyGateway" @blur="applyGateway" />

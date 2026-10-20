@@ -1,6 +1,7 @@
 import { formatRule, routingTable, sendPacket, type SimState } from './forwarding'
 import { inSubnet, isValidIp, parseCidr, prefixToMask } from './ip'
-import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, isPhonePcPort, isWifiClient, isRouterLike, linkActive, linkOn, netIfaces, setIfaceIp, wifiProblem } from './network'
+import { servedWlans, serviceProblem } from './wlc'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, isPhonePcPort, isWifiClient, isRouterLike, linkActive, linkOn, netIfaces, setIfaceIp } from './network'
 import { dhcpRelease, dhcpRequest } from './dhcp'
 import { staticEgress } from './routing'
 import type { Device, FwRule, PingResult, Proto, Topology } from './types'
@@ -294,14 +295,12 @@ export function execute(
   }
 }
 
-/** Networks a laptop can see: every AP radio that is up and serving an SSID. */
+/** Networks a laptop can see: every SSID an AP serves, whether autonomous or from a WLC it joined. */
 function networksInRange(topo: Topology) {
   return topo.devices.flatMap((ap) => {
-    const w = ap.ios?.wlan
     const radio = ap.ifaces.find((i) => i.name === 'd0')
-    if (ap.type !== 'ap' || !w?.radioSsid || !radio || radio.shutdown) return []
-    const s = w.ssids[w.radioSsid]
-    return s ? [{ ap, ssid: w.radioSsid, cfg: s, mac: radio.mac }] : []
+    if (ap.type !== 'ap' || !radio) return []
+    return servedWlans(topo, ap).map((w) => ({ ap, ssid: w.ssid, cfg: w, mac: radio.mac }))
   })
 }
 
@@ -328,7 +327,7 @@ function wifi(topo: Topology, dev: Device, rest: string[]): CommandResult {
       if (!nets.length) return err(`No network named "${ssid}" in range`)
       const key = pw.length ? pw.join(' ') : undefined
       if (nets[0].cfg.wpa2 && !key) return err(`"${ssid}" is secured with WPA2: wifi connect ${ssid} <password>`)
-      const problems = nets.map((n) => wifiProblem(n.ap, ssid, key))
+      const problems = nets.map((n) => serviceProblem(topo, n.ap, ssid, key))
       const k = problems.findIndex((p) => p === null)
       if (k < 0) {
         if (problems.includes('wrong password')) return err('Authentication failed: wrong password (4-way handshake failed)')
@@ -361,7 +360,7 @@ function wifi(topo: Topology, dev: Device, rest: string[]): CommandResult {
       return {
         lines: [
           out(`wlan0: ${up ? 'connected' : 'DISCONNECTED'} to "${current.wifi.ssid}" via ${ap?.name}`, up ? 'ok' : 'err'),
-          ...(up || !ap ? [] : [out(`  ↳ ${wifiProblem(ap, current.wifi.ssid, current.wifi.key)}`, 'muted')]),
+          ...(up || !ap ? [] : [out(`  ↳ ${serviceProblem(topo, ap, current.wifi.ssid, current.wifi.key)}`, 'muted')]),
         ],
       }
     }

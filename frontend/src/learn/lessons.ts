@@ -711,14 +711,38 @@ const l2Hardening: Topic = {
   ],
 }
 
+// ---------- wireless LAN controller ----------
+
+const wlcRole: Topic = {
+  id: 'wlc',
+  title: 'The Wireless LAN Controller',
+  body: [
+    'In a small network each access point is autonomous: you log into every AP and configure its SSID and security by hand. That does not scale.',
+    'A Wireless LAN Controller (WLC) centralises it. You define each WLAN once on the controller — the SSID, its security, and the VLAN its clients land in. Access points that can reach the WLC over the wired network join it (CAPWAP) and become lightweight: they stop using their own config and simply broadcast the controller\'s WLANs. Change a WLAN on the WLC and every AP updates at once.',
+    'In NetSim: drop a WLC from the device list, cable it into the switched network, and any AP that can reach it auto-joins. Select the WLC to open its dashboard and create WLANs (SSID, Open or WPA2-PSK, VLAN, enabled). Laptops then join those SSIDs through any lightweight AP with the usual wifi connect.',
+    'Cisco real-world: this is the split-MAC model (AireOS / Catalyst 9800). An AP with no controller in reach stays autonomous and uses its local dot11 config.',
+  ],
+}
+
+const wlcWlans: Topic = {
+  id: 'wlc-wlans',
+  title: 'Creating WLANs on the controller',
+  body: [
+    'Open the WLC\'s dashboard (select it). Each WLAN row has a profile name, the SSID clients see, security (Open for a guest network, or WPA2-PSK with a passphrase for a secured one), the VLAN its clients are placed in, and an Enabled switch.',
+    'A real deployment maps each WLAN to a different VLAN — for example CORP on VLAN 10 and GUEST on VLAN 20 — so the wired side keeps them separated. Keep the guest WLAN off your internal VLANs.',
+    'Broadcast on shows the SSID in client scans; turn it off for a hidden network. Disable a WLAN to take it off the air everywhere without deleting it.',
+  ],
+}
+
 const TOPICS: Record<DeviceType, Topic[]> = {
   pc: [ipBasics, gateway, dhcpClient, testing, cabling, ports, sshClient],
   laptop: [wifi, ipBasics, gateway, dhcpClient, testing, sshClient],
   mobile: [wifi, ipBasics, gateway, dhcpClient, testing],
+  wlc: [wlcRole, wlcWlans, wifiSecurity],
   attacker: [attackIntro, ...ATTACK_LESSONS, ipBasics],
   server: [serverRole, ipBasics, gateway, testing, ports],
   switch: [switching, vlans, trunks, switchMgmt, cablingIos, structured, iosModes, portAdmin, neighbors, saving, l2Hardening],
-  ap: [apRole, apSecure, wifiSecurity, iosModes, saving],
+  ap: [apRole, apSecure, wifiSecurity, wlcRole, iosModes, saving],
   router: [routing, cablingIos, iosModes, ifaceConfig, staticRoutes, dynamicRouting, roas, acls, dhcpServer, nat, bgp, troubleshooting, hardening, saving],
   firewall: [firewalling, fwRules, iosModes, ifaceConfig, staticRoutes, dynamicRouting, acls, nat, saving],
   patch: [patchPanel, structured, cabling],

@@ -102,6 +102,7 @@ const TYPE_COLOR: Record<string, string> = {
   pc: '#c9d6e8',
   laptop: '#c9d6e8',
   attacker: '#ff4d5e',
+  wlc: '#8be9ff',
   ap: '#39ff88',
 }
 
@@ -2116,7 +2117,7 @@ export class RoomScene {
         g.fillText(d.name, 30, H / 2 - 16)
         g.font = `${d.type === 'switch' ? 16 : 20}px ${FONT}`
         g.fillStyle = '#6b7a90'
-        g.fillText(({ router: 'NS-2911 router', switch: 'NS-2960-48', firewall: 'NS-ASA firewall', server: 'NS-R740 server' } as Record<string, string>)[d.type] ?? '', 30, H / 2 + 20)
+        g.fillText(({ router: 'NS-2911 router', switch: 'NS-2960-48', firewall: 'NS-ASA firewall', server: 'NS-R740 server', wlc: 'NS-WLC-9800' } as Record<string, string>)[d.type] ?? '', 30, H / 2 + 20)
       }
       // Port labels.
       g.fillStyle = '#9fb0c4'
