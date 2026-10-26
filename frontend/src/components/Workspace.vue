@@ -1,13 +1,21 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { defineAsyncComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useWorkspace } from '../stores/workspace'
 import NetworkCanvas from './canvas/NetworkCanvas.vue'
-import RoomView from './room/RoomView.vue'
 import ConsoleWindow from './terminal/ConsoleWindow.vue'
+import PlacementDialog from './panels/PlacementDialog.vue'
+import PortPicker from './panels/PortPicker.vue'
 import { getDevice } from '../engine/network'
 import DeviceConfigPanel from './panels/DeviceConfigPanel.vue'
 import DevicePalette from './panels/DevicePalette.vue'
 import TerminalPane from './terminal/TerminalPane.vue'
+
+// The 3D building (and three.js) loads only when you first open the 3D view.
+const RoomView = defineAsyncComponent({
+  loader: () => import('./room/RoomView.vue'),
+  loadingComponent: { render: () => h('div', { class: 'grid h-full place-items-center text-xs text-dim' }, 'loading the 3D building…') },
+  delay: 150,
+})
 
 const ws = useWorkspace()
 const termOpen = ref(true)
@@ -24,10 +32,14 @@ watch(
 )
 
 function onKey(e: KeyboardEvent) {
-  if (e.key !== 'Delete' && e.key !== 'Backspace') return
   const t = e.target as HTMLElement
-  if (t.closest('input, textarea, .xterm')) return
-  ws.removeSelected()
+  if (t.closest('input, textarea, .xterm') || e.ctrlKey || e.metaKey || e.altKey) return
+  if (e.key === 'Delete' || e.key === 'Backspace') ws.removeSelected()
+  // E opens the selected device's console. (The 3D room handles E itself, for what you point at.)
+  else if (e.key.toLowerCase() === 'e' && ws.view === '2d' && ws.selectedDevice) {
+    e.preventDefault()
+    ws.openConsole(ws.selectedDevice.id)
+  }
 }
 
 // A deleted device takes its console window with it.
@@ -95,6 +107,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
         <slot name="side" />
       </div>
     </div>
+    <PlacementDialog />
+    <PortPicker />
   </div>
 </template>
 

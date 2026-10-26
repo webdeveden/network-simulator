@@ -3,6 +3,11 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { isIos } from '../../engine/ios'
 import { getDevice } from '../../engine/network'
 import { useWorkspace, type ConsoleWin } from '../../stores/workspace'
+import LearnPanel from './LearnPanel.vue'
+import NotesPanel from './NotesPanel.vue'
+import PuttyPanel from './PuttyPanel.vue'
+import WlcPanel from '../panels/WlcPanel.vue'
+import { roomOf } from '../../room/layout'
 import TerminalPane from './TerminalPane.vue'
 
 const props = defineProps<{ win: ConsoleWin }>()
@@ -10,6 +15,44 @@ const ws = useWorkspace()
 const root = ref<HTMLDivElement>()
 const term = ref<InstanceType<typeof TerminalPane>>()
 const device = computed(() => getDevice(ws.topo, props.win.deviceId))
+type Tab = 'console' | 'putty' | 'notes' | 'learn'
+type Tab = 'console' | 'putty' | 'notes' | 'learn' | 'dashboard'
+const tab = ref<Tab>('console')
+if (device.value?.type === 'wlc') tab.value = 'dashboard'
+/** PCs and laptops get a PuTTY tab for SSH/serial sessions to network devices. */
+/** The admin PC (a PC or laptop at the server room desk) also keeps Notes with every device's IP. */
+const isAdminPc = computed(() => !!device.value && (device.value.type === 'pc' || device.value.type === 'laptop') && roomOf(device.value, ws.topo) === 'server')
+const tabs = computed<Tab[]>(() =>
+  device.value?.type === 'pc' || device.value?.type === 'laptop'
+    ? isAdminPc.value
+      ? ['console', 'putty', 'notes', 'learn']
+      : ['console', 'putty', 'learn']
+    : ['console', 'learn'],
+  device.value?.type === 'wlc'
+    ? ['dashboard', 'learn']
+    : device.value?.type === 'pc' || device.value?.type === 'laptop'
+      ? isAdminPc.value
+        ? ['console', 'putty', 'notes', 'learn']
+        : ['console', 'putty', 'learn']
+      : ['console', 'learn'],
+)
+
+function openSession(cmd: string) {
+  tab.value = 'console'
+  nextTick(() => term.value?.runCommand(cmd))
+}
+
+/** A command clicked in the Learn tab goes onto the console's input line. */
+function typeCommand(cmd: string) {
+  tab.value = 'console'
+  nextTick(() => term.value?.setInput(cmd))
+}
+
+function selectTab(t: Tab) {
+  tab.value = t
+  if (t === 'console') nextTick(() => term.value?.focus())
+}
+
 const front = computed(() => Math.max(...ws.consoles.map((c) => c.z)) === props.win.z)
 
 let drag: { dx: number; dy: number } | null = null
@@ -83,11 +126,38 @@ onMounted(() => {
       <span class="truncate">
         <span :class="front ? 'text-neon' : 'text-dim'">●</span>
         {{ device && isIos(device) ? 'COM1 · serial console' : 'terminal' }} · {{ device?.name ?? '(deleted)' }}
+        {{ device?.type === 'wlc' ? 'WLC dashboard' : device && isIos(device) ? 'COM1 · serial console' : 'terminal' }} · {{ device?.name ?? '(deleted)' }}
       </span>
       <button class="px-1 text-dim hover:text-danger" title="Close (Esc)" @click="ws.closeConsole(win.deviceId)">✕</button>
     </div>
-    <div class="min-h-0 flex-1">
+    <div class="flex border-b border-line bg-panel text-[11px]">
+      <button
+        v-for="t in tabs"
+        :key="t"
+        class="px-3 py-1 tracking-wider uppercase"
+        :class="tab === t ? 'border-b-2 border-neon text-neon' : 'text-dim hover:text-text'"
+        @click="selectTab(t)"
+      >
+        {{ t === 'console' ? 'Console' : t === 'putty' ? 'PuTTY' : t === 'notes' ? 'Notes' : 'Learn' }}
+        {{ t === 'console' ? 'Console' : t === 'putty' ? 'PuTTY' : t === 'notes' ? 'Notes' : t === 'dashboard' ? 'Dashboard' : 'Learn' }}
+      </button>
+    </div>
+    <!-- v-show keeps the terminal session and scrollback while reading lessons -->
+    <div v-show="tab === 'console'" class="min-h-0 flex-1">
       <TerminalPane ref="term" :device-id="win.deviceId" />
+    </div>
+    <!-- kept alive too, so returning to Learn keeps your place in the lesson -->
+    <div v-if="tab === 'notes'" class="min-h-0 flex-1">
+      <NotesPanel :device-id="win.deviceId" @ssh="(h) => openSession(`ssh admin@${h}`)" />
+    </div>
+    <div v-if="tab === 'putty'" class="min-h-0 flex-1">
+      <PuttyPanel :device-id="win.deviceId" @open="openSession" />
+    </div>
+    <div v-if="tab === 'dashboard'" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-xs">
+      <WlcPanel :device-id="win.deviceId" />
+    </div>
+    <div v-show="tab === 'learn'" class="min-h-0 flex-1">
+      <LearnPanel :device-id="win.deviceId" @type="typeCommand" />
     </div>
     <div class="border-t border-line px-3 py-0.5 text-[10px] text-dim">
       drag the title to move · drag the corner to resize · Esc closes

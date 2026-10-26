@@ -44,6 +44,7 @@ MISSIONS: list[dict[str, Any]] = [
         ],
         "hints": [
             "Hover a PC to see its connection dots, then drag from one to the other PC to lay a cable.",
+            "Two PCs need a crossover cable (both send on the same wires). The Auto cable picks it for you; try Straight-through to see the link stay down.",
             "Both PCs need addresses in the same subnet, e.g. 192.168.0.1/24 and 192.168.0.2/24.",
             "Select PC1, then type in the terminal: ip set 192.168.0.1/24",
         ],
@@ -61,10 +62,10 @@ MISSIONS: list[dict[str, Any]] = [
         ),
         "start": {
             "devices": [
-                {"type": "pc", "name": "PC1", "x": 60, "y": 60},
-                {"type": "pc", "name": "PC2", "x": 520, "y": 60},
-                {"type": "pc", "name": "PC3", "x": 60, "y": 320},
-                {"type": "pc", "name": "PC4", "x": 520, "y": 320},
+                {"type": "pc", "name": "PC1", "x": 60, "y": 60, "room": "accounting"},
+                {"type": "pc", "name": "PC2", "x": 520, "y": 60, "room": "accounting"},
+                {"type": "pc", "name": "PC3", "x": 60, "y": 320, "room": "accounting"},
+                {"type": "pc", "name": "PC4", "x": 520, "y": 320, "room": "accounting"},
             ]
         },
         "palette": ["switch"],
@@ -149,7 +150,7 @@ MISSIONS: list[dict[str, Any]] = [
             _ping("BR-PC can ping HQ-PC", "BR-PC", "HQ-PC"),
         ],
         "hints": [
-            "Cable R1 to R2. On both routers the cable lands on g0/1.",
+            "Cable R1 to R2 with a crossover cable (router to router). On both routers it lands on g0/1.",
             "Give the transit link 10.2.0.1/30 on R1 g0/1 and 10.2.0.2/30 on R2 g0/1.",
             "Select R1: enable, configure terminal, interface g0/1, ip address 10.2.0.1 255.255.255.252",
             "Still in config mode on R1: ip route 10.3.0.0 255.255.255.0 10.2.0.2. Then add the opposite route on R2.",
@@ -307,7 +308,7 @@ MISSIONS: list[dict[str, Any]] = [
         ),
         "start": {
             "devices": [
-                {"type": "pc", "name": "ADMIN-PC", "x": 60, "y": 200, "ifaces": {"eth0": "10.0.0.10/24"}, "gateway": "10.0.0.1"},
+                {"type": "pc", "name": "ADMIN-PC", "x": 60, "y": 200, "ifaces": {"eth0": "10.0.0.10/24"}, "gateway": "10.0.0.1", "room": "server"},
                 {"type": "switch", "name": "SW1", "x": 300, "y": 200},
                 {"type": "router", "name": "R1", "x": 540, "y": 200, "ifaces": {"g0/0": "10.0.0.1/24"}},
             ],
@@ -350,9 +351,9 @@ MISSIONS: list[dict[str, Any]] = [
             "devices": [
                 {"type": "server", "name": "FILES", "x": 60, "y": 60, "ifaces": {"eth0": "192.168.1.10/24"}},
                 {"type": "switch", "name": "SW1", "x": 300, "y": 60},
-                {"type": "ap", "name": "AP1", "x": 300, "y": 260},
-                {"type": "laptop", "name": "LT1", "x": 120, "y": 420, "ifaces": {"wlan0": "192.168.1.21/24"}},
-                {"type": "laptop", "name": "LT2", "x": 480, "y": 420, "ifaces": {"wlan0": "192.168.1.22/24"}},
+                {"type": "ap", "name": "AP1", "x": 300, "y": 260, "room": "sales"},
+                {"type": "laptop", "name": "LT1", "x": 120, "y": 420, "ifaces": {"wlan0": "192.168.1.21/24"}, "room": "sales"},
+                {"type": "laptop", "name": "LT2", "x": 480, "y": 420, "ifaces": {"wlan0": "192.168.1.22/24"}, "room": "sales"},
             ],
             "links": [["SW1", "FILES"], ["SW1", "AP1"]],
         },

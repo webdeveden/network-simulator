@@ -1,11 +1,15 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { deskRoomsFor, onDesk, roomLabel, roomOf } from '../../room/layout'
+import { computed, ref, watch } from 'vue'
 import { parseRule } from '../../engine/commands'
 import { formatRule } from '../../engine/forwarding'
 import { isValidIp, parseCidr } from '../../engine/ip'
-import { DEVICE_CATALOG, getDevice, isHost, linkOn, peerOf, setIfaceIp } from '../../engine/network'
+import { dhcpRequest } from '../../engine/dhcp'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isConsolePort, isHost, isPhonePcPort, isSvi, linkActive, linkOn, peerOf, portKind, setIfaceIp, type PortKind } from '../../engine/network'
 import { useWorkspace } from '../../stores/workspace'
 import DeviceIcon from '../canvas/DeviceIcon.vue'
+import RackPanel from './RackPanel.vue'
+import WlcPanel from './WlcPanel.vue'
 
 const ws = useWorkspace()
 
@@ -49,6 +53,25 @@ function applyIp(iface: string) {
   const e = setIfaceIp(d, iface, value || 'none')
   if (e) ws.notify(e, 'err')
   else ws.notify(value ? `${d.name} ${iface} = ${value}` : `${d.name} ${iface} cleared`)
+}
+
+const PORT_COLORS: Record<PortKind, string> = { copper: '#22d3ee', fiber: CABLES.fiber.color, console: CABLES.console.color, radio: '#8892a6', virtual: '#4b5568' }
+const PORT_LABELS: Record<PortKind, string> = { copper: 'copper RJ45', fiber: 'fiber SFP', console: 'console', radio: 'radio', virtual: 'virtual' }
+/** The port kinds this device has, for the legend. */
+const legendKinds = computed(() => {
+  const d = ws.selectedDevice
+  if (!d) return []
+  const kinds = new Set(d.ifaces.map((i) => portKind(d, i.name)))
+  return (['copper', 'fiber', 'console', 'radio', 'virtual'] as PortKind[]).filter((k) => kinds.has(k))
+})
+
+/** Runs the DHCP exchange for one interface; the panel's fields refresh from the result. */
+function getDhcp(iface: string) {
+  const d = ws.selectedDevice!
+  const r = dhcpRequest(ws.topo, ws.sim, d, iface)
+  const last = [...r.lines].reverse().find((l) => l.kind === 'ok' || l.kind === 'err')?.text ?? ''
+  const why = r.ok ? '' : r.lines.find((l) => l.text.includes('↳'))?.text.replace('↳', '').trim()
+  ws.notify(`${d.name} ${iface}: ${last}${why ? ` — ${why}` : ''}`, r.ok ? 'ok' : 'err')
 }
 
 function applyGateway() {
@@ -118,26 +141,74 @@ function doPing() {
         />
       </div>
       <p class="mt-2 text-[10px] text-dim">{{ DEVICE_CATALOG[ws.selectedDevice.type].description }}</p>
+      <button
+        v-if="ws.selectedDevice.type !== 'isp'"
+        class="btn mt-2 w-full"
+        title="Walk up to this device in the 3D room"
+        @click="ws.goToDevice(ws.selectedDevice.id)"
+      >
+        📍 Show in 3D
+      </button>
+
+      <template v-if="onDesk(ws.selectedDevice)">
+        <h3 class="section">room</h3>
+        <select
+          class="input"
+          :value="roomOf(ws.selectedDevice, ws.topo)"
+          @change="ws.moveToRoom(ws.selectedDevice.id, ($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="o in deskRoomsFor(ws.topo, ws.selectedDevice.type)" :key="o.id" :value="o.id">{{ roomLabel(ws.topo, o.id) }}</option>
+        </select>
+      </template>
 
       <h3 class="section">interfaces</h3>
+      <div class="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-dim">
+        <span v-for="k in legendKinds" :key="k"><span class="mr-1 inline-block h-2 w-2 align-middle" :class="k === 'fiber' ? 'rounded-full' : ''" :style="{ background: PORT_COLORS[k] }" />{{ PORT_LABELS[k] }}</span>
+      </div>
       <div v-for="i in ws.selectedDevice.ifaces" :key="i.name" class="mb-2">
         <div class="flex justify-between text-[10px]">
-          <span class="text-cyan">{{ i.name }}</span>
+          <span class="text-cyan">
+            <span
+              class="mr-1 inline-block h-2 w-2 align-middle"
+              :class="portKind(ws.selectedDevice, i.name) === 'fiber' ? 'rounded-full' : ''"
+              :style="{ background: PORT_COLORS[portKind(ws.selectedDevice, i.name)] }"
+            />{{ i.name }}
+            <span v-if="portKind(ws.selectedDevice, i.name) !== 'copper'" :style="{ color: PORT_COLORS[portKind(ws.selectedDevice, i.name)] }">
+              · {{ PORT_LABELS[portKind(ws.selectedDevice, i.name)] }}
+            </span>
+          </span>
           <span class="text-dim">{{ peerLabel(i.name) }}</span>
         </div>
-        <input
-          v-if="DEVICE_CATALOG[ws.selectedDevice.type].layer === 3"
-          v-model="drafts[i.name]"
-          class="input mt-0.5"
-          placeholder="ip/prefix e.g. 192.168.1.10/24"
-          @keydown.enter="applyIp(i.name)"
-          @blur="applyIp(i.name)"
-        />
+        <div
+          v-if="(DEVICE_CATALOG[ws.selectedDevice.type].layer === 3 || isSvi(i.name)) && !isConsolePort(i.name) && !isPhonePcPort(ws.selectedDevice, i.name)"
+          class="mt-0.5 flex gap-1"
+        >
+          <input
+            v-model="drafts[i.name]"
+            class="input min-w-0 flex-1"
+            placeholder="ip/prefix e.g. 192.168.1.10/24"
+            @keydown.enter="applyIp(i.name)"
+            @blur="applyIp(i.name)"
+          />
+          <button
+            v-if="isHost(ws.selectedDevice)"
+            class="btn shrink-0 px-2 text-[10px]"
+            :class="i.dhcp ? 'btn-primary' : ''"
+            title="Ask a DHCP server for an address, mask and gateway"
+            @click="getDhcp(i.name)"
+          >
+            DHCP
+          </button>
+        </div>
+        <div v-if="i.dhcp" class="mt-0.5 text-[10px] text-neon">via DHCP{{ i.ip ? '' : ' (no lease yet)' }}</div>
       </div>
 
       <p v-if="ws.selectedDevice.type === 'ap'" class="mt-1 text-[10px] text-dim">
         Configure Wi-Fi from the console: dot11 ssid, then interface Dot11Radio0.
+        Autonomous Wi-Fi from the console: dot11 ssid, then interface Dot11Radio0. Or cable a WLC in and this AP joins it (lightweight).
       </p>
+
+      <WlcPanel v-if="ws.selectedDevice.type === 'wlc'" :device-id="ws.selectedDevice.id" />
       <template v-if="isHost(ws.selectedDevice)">
         <h3 class="section">default gateway</h3>
         <input v-model="gwDraft" class="input" placeholder="router IP on this subnet" @keydown.enter="applyGateway" @blur="applyGateway" />
@@ -146,7 +217,7 @@ function doPing() {
       <template v-if="ws.selectedDevice.type === 'router' || ws.selectedDevice.type === 'firewall'">
         <h3 class="section">static routes</h3>
         <div v-for="(r, n) in ws.selectedDevice.routes" :key="n" class="flex items-center justify-between py-0.5">
-          <span>{{ r.network }}/{{ r.prefix }} → {{ r.via }}</span>
+          <span>{{ r.network }}/{{ r.prefix }} → {{ r.via || r.iface }}{{ r.iface && r.via ? ` (${r.iface})` : '' }}{{ r.ad ? ` · AD ${r.ad}` : '' }}</span>
           <button class="text-danger hover:glow" @click="ws.selectedDevice.routes.splice(n, 1)">✕</button>
         </div>
         <div class="mt-1 flex gap-1">
@@ -196,17 +267,28 @@ function doPing() {
       </button>
     </template>
 
+    <!-- Rack -->
+    <RackPanel v-else-if="ws.selection?.kind === 'rack'" :index="Number(ws.selection.id)" />
+
     <!-- Link -->
     <template v-else-if="ws.selectedLink">
-      <div class="text-sm font-semibold text-cyan">{{ ws.selectedLink.wifi ? `Wi-Fi · ${ws.selectedLink.wifi.ssid}` : 'Cable' }}</div>
+      <div class="text-sm font-semibold" :style="{ color: ws.selectedLink.wifi ? '#22d3ee' : CABLES[ws.selectedLink.cable ?? 'straight'].color }">
+        {{ ws.selectedLink.wifi ? `Wi-Fi · ${ws.selectedLink.wifi.ssid}` : `${CABLES[ws.selectedLink.cable ?? 'straight'].label} cable` }}
+      </div>
+      <p v-if="!ws.selectedLink.wifi" class="mt-1 text-[10px] text-dim">{{ CABLES[ws.selectedLink.cable ?? 'straight'].description.replace(/`/g, '') }}</p>
       <p class="mt-2">
         {{ getDevice(ws.topo, ws.selectedLink.a.device)?.name }} <span class="text-dim">{{ ws.selectedLink.a.iface }}</span>
         ⟷
         {{ getDevice(ws.topo, ws.selectedLink.b.device)?.name }} <span class="text-dim">{{ ws.selectedLink.b.iface }}</span>
       </p>
-      <p class="mt-2">
+      <p v-if="ws.selectedLink.cable === 'console'" class="mt-2">
+        status: <span class="text-cyan">management only</span>
+        <span class="block text-[10px] text-dim">Carries no network traffic. On the PC, type console.</span>
+      </p>
+      <p v-else class="mt-2">
         status:
-        <span :class="ws.selectedLink.up ? 'text-neon' : 'text-danger'">{{ ws.selectedLink.up ? 'UP' : 'DOWN' }}</span>
+        <span :class="linkActive(ws.topo, ws.selectedLink) ? 'text-neon' : 'text-danger'">{{ linkActive(ws.topo, ws.selectedLink) ? 'UP' : 'DOWN' }}</span>
+        <span v-if="cableProblem(ws.topo, ws.selectedLink)" class="mt-1 block text-[11px] text-danger">{{ cableProblem(ws.topo, ws.selectedLink) }}</span>
       </p>
       <div class="mt-3 flex gap-2">
         <button class="btn" @click="ws.selectedLink.up = !ws.selectedLink.up">

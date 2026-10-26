@@ -6,7 +6,8 @@
 import { execute, type CommandResult } from './commands'
 import type { SimState } from './forwarding'
 import { answerPending, complete, iosPrompt, isIos, parseSshArgs, pendingPrompt, runIos, sshConnect, type Session } from './ios'
-import { getDevice } from './network'
+import { getDevice, linkOn } from './network'
+import { runKali } from './kali'
 import type { Device, Topology } from './types'
 
 export type { Session } from './ios'
@@ -29,6 +30,7 @@ export function promptOf(topo: Topology, s: Session): { text: string; secret: bo
   const dev = active(topo, s)
   if (!dev) return { text: '(no device)>', secret: false }
   const f = s.frames[s.frames.length - 1]
+  if (dev.type === 'attacker') return { text: `┌──(root㉿${dev.name})-[~]\n└─# `, secret: false }
   return { text: isIos(dev) ? iosPrompt(dev.name, f.mode) : `${dev.name}:~$`, secret: false }
 }
 
@@ -42,9 +44,27 @@ export function runLine(topo: Topology, state: SimState, s: Session, input: stri
   const dev = active(topo, s)
   if (!dev) return { lines: [{ text: 'No device selected', kind: 'err' }] }
   const f = s.frames[s.frames.length - 1]
+  if (dev.type === 'patch') return { lines: [{ text: `${dev.name} is a patch panel: passive wiring, no console. Front port N connects straight through to rear port N.`, kind: 'muted' }] }
+  if (dev.type === 'attacker') return runKali(topo, dev, input)
+  if (dev.type === 'wlc') return { lines: [{ text: `${dev.name} is a wireless controller: configure it on the WLC dashboard (select it in the side panel), not the console.`, kind: 'muted' }] }
   if (isIos(dev)) return runIos({ topo, state, s, f, dev, promptLen }, input)
 
   const [cmd, ...rest] = input.trim().split(/\s+/)
+  if (cmd === 'console') {
+    // Over the console cable: no IP needed, like plugging a laptop into a new router.
+    const l = linkOn(topo, dev.id, 'com1')
+    if (!l) return { lines: [{ text: `${dev.name} has no console cable on COM1. Plug one into a router, switch, firewall or AP console port.`, kind: 'err' }] }
+    const peer = l.a.device === dev.id ? l.b : l.a
+    const target = getDevice(topo, peer.device)
+    if (!target || !isIos(target)) return { lines: [{ text: 'Nothing answers on COM1', kind: 'err' }] }
+    s.frames.push({ deviceId: target.id, mode: 'user', remote: { user: 'console', ip: 'COM1', serial: true } })
+    return {
+      lines: [
+        { text: `Connected to ${target.name} on COM1 (9600 8N1). Press Enter if the prompt doesn't show.`, kind: 'muted' },
+        ...(target.ios?.banner ? [{ text: target.ios.banner, kind: 'info' as const }] : []),
+      ],
+    }
+  }
   if (cmd === 'ssh') {
     const a = parseSshArgs(rest)
     if (typeof a === 'string') return { lines: [{ text: a, kind: 'err' }] }

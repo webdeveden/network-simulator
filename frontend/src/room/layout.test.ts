@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { addDevice, buildTopology, connectPorts, linkOn } from '../engine/network'
-import { collide, portSpots, RACK, roomLayout } from './layout'
+import { addDevice, buildTopology, connectPorts, linkOn, portKind } from '../engine/network'
+import { BUILDING, collide, CUBE, freeSpot, isBlocked, moveDeviceInRack, portSpots, RACK, roomAt, roomLayout, switchPortSize } from './layout'
 
 const topo = () =>
   buildTopology({
@@ -28,12 +28,14 @@ describe('room layout', () => {
   it('never overlaps furniture and keeps it inside the room', () => {
     const t = buildTopology({ devices: Array.from({ length: 20 }, (_, k) => ({ type: k % 3 ? 'router' : 'pc', name: `D${k}`, x: 0, y: 0 }) as const) })
     const l = roomLayout(t)
-    l.obstacles.forEach((a, i) => l.obstacles.slice(i + 1).forEach((b) => expect(overlaps(a, b)).toBe(false)))
+    // Furniture never overlaps. (Thin wall panels meet at cubicle corners; that's fine.)
+    const solid = l.obstacles.filter((o) => o.maxX - o.minX > 0.15 && o.maxZ - o.minZ > 0.15)
+    solid.forEach((a, i) => solid.slice(i + 1).forEach((b) => expect(overlaps(a, b)).toBe(false)))
     for (const o of l.obstacles) {
-      expect(o.minX).toBeGreaterThan(l.bounds.minX)
-      expect(o.maxX).toBeLessThan(l.bounds.maxX)
-      expect(o.minZ).toBeGreaterThan(l.bounds.minZ)
-      expect(o.maxZ).toBeLessThan(l.bounds.maxZ)
+      expect(o.minX).toBeGreaterThanOrEqual(l.bounds.minX)
+      expect(o.maxX).toBeLessThanOrEqual(l.bounds.maxX)
+      expect(o.minZ).toBeGreaterThanOrEqual(l.bounds.minZ)
+      expect(o.maxZ).toBeLessThanOrEqual(l.bounds.maxZ)
     }
     expect(new Set(l.racks.map((r) => r.z)).size).toBe(Math.ceil(l.racks.length / RACK.perRow))
   })
@@ -73,9 +75,88 @@ describe('room layout', () => {
     for (const p of before) expect(after.find((q) => q.deviceId === p.deviceId)).toEqual(p)
   })
 
+  it('puts racks in the server room and desks in the IT office by default', () => {
+    const t = topo()
+    const l = roomLayout(t)
+    const inRoom = (id: string) => roomAt(l, l.placements.find((p) => p.deviceId === id)!.x, l.placements.find((p) => p.deviceId === id)!.z - 0.1)?.id
+    expect(t.devices.map((d) => inRoom(d.id))).toEqual(['it', 'it', 'server', 'server', 'server'])
+    // Only the last cubicle in a row draws its right wall; neighbours share walls.
+    expect(l.cubicles.map((c) => c.rightWall)).toEqual([false, true])
+    expect(l.cubicles[1].x - l.cubicles[0].x).toBeCloseTo(CUBE.w)
+  })
+
+  it('puts a desk device in the office you pick, without moving anything else', () => {
+    const t = topo()
+    const before = roomLayout(t).placements.filter((p) => p.deviceId !== t.devices[1].id)
+    t.devices[1].room = 'sales'
+    const l = roomLayout(t)
+    const p = l.placements.find((x) => x.deviceId === t.devices[1].id)!
+    expect(roomAt(l, p.x, p.z - 0.1)?.id).toBe('sales')
+    for (const q of before.filter((q) => q.station === 'rack')) expect(l.placements.find((x) => x.deviceId === q.deviceId)).toEqual(q)
+    // Rack gear can't be put in an office.
+    t.devices[3].room = 'sales'
+    expect(roomAt(l, l.placements.find((x) => x.deviceId === t.devices[3].id)!.x, -1)?.id).toBe('server')
+  })
+
+  it('lets you walk through doorways but not through walls', () => {
+    const l = roomLayout(topo())
+    const server = l.rooms.find((r) => r.id === 'server')!
+    const walk = (x: number) => {
+      let p = { x, z: 1.2 }
+      for (let k = 0; k < 20; k++) p = collide(l, p.x, p.z, 0, -0.1)
+      return p
+    }
+    expect(walk(server.doorX).z).toBeLessThan(-0.5)
+    expect(walk(server.doorX + BUILDING.door / 2 + 0.8).z).toBeGreaterThan(0)
+    // Every room has its own doorway onto the corridor.
+    for (const r of l.rooms) expect(walk(r.doorX).z, r.id).toBeLessThan(-0.5)
+  })
+
+  it('rearranges devices inside a rack and between racks', () => {
+    const t = topo()
+    const [, , sw, r1, srv] = t.devices
+    const order = (k: number) => roomLayout(t).racks.find((r) => r.index === k)?.deviceIds
+    expect(order(0)).toEqual([sw.id, r1.id, srv.id])
+    expect(moveDeviceInRack(t, srv.id, 0, 0)).toBeNull()
+    expect(order(0)).toEqual([srv.id, sw.id, r1.id])
+    expect(moveDeviceInRack(t, sw.id, 1, 0)).toBeNull()
+    expect(order(0)).toEqual([srv.id, r1.id])
+    expect(order(1)).toEqual([sw.id])
+    // New devices still go into the first rack with room, without disturbing the order.
+    const r2 = addDevice(t, 'router')
+    expect(order(0)).toEqual([srv.id, r1.id, r2.id])
+    expect(moveDeviceInRack(t, t.devices[0].id, 0, 0)).toMatch(/Only rack-mounted/)
+  })
+
+  it('refuses to overfill a rack', () => {
+    const t = buildTopology({ devices: Array.from({ length: 12 }, (_, k) => ({ type: 'server', name: `S${k}`, x: 0, y: 0 }) as const) })
+    const l = roomLayout(t)
+    const inRack1 = l.racks[1].deviceIds[0]
+    expect(moveDeviceInRack(t, inRack1, 0, 0)).toMatch(/Rack 1 is full/)
+  })
+
   it('spawns the player in free space', () => {
     const l = roomLayout(topo())
     expect(collide(l, l.spawn.x, l.spawn.z, 0, 0)).toEqual(l.spawn)
+  })
+
+  it.each([
+    ['racks', topo()],
+    ['only desks', buildTopology({ devices: [{ type: 'pc', name: 'PC1', x: 0, y: 0 }] })],
+    ['empty room', buildTopology({ devices: [] })],
+  ])('starts close to the gear in free space (%s)', (_, t) => {
+    const l = roomLayout(t)
+    const free = (x: number, z: number) => collide(l, x - 0.01, z, 0.01, 0).x === x
+    expect(free(l.home.x, l.home.z)).toBe(true)
+    if (l.racks.length) {
+      expect(l.home.rack).toBe(0)
+      expect(l.home.z - l.racks[0].z).toBeLessThan(1.5)
+      expect(roomAt(l, l.home.x, l.home.z)?.id).toBe('server')
+      // Looks at the mounted devices, not the empty part of the rack.
+      const ys = l.placements.filter((p) => p.rack === 0).map((p) => p.panel.y)
+      expect(l.home.look[1]).toBeGreaterThanOrEqual(Math.min(...ys))
+      expect(l.home.look[1]).toBeLessThanOrEqual(Math.max(...ys))
+    }
   })
 
   it('stops the player at a rack and slides along it', () => {
@@ -87,12 +168,31 @@ describe('room layout', () => {
     expect(p.x).toBeCloseTo(x + 0.1)
   })
 
-  it('lays switch ports out in two rows, inside the panel', () => {
-    const t = topo()
-    const sw = t.devices.find((d) => d.type === 'switch')!
-    const spots = portSpots(sw)
-    expect(new Set(spots.map((s) => s.y)).size).toBe(2)
-    for (const s of spots) expect(Math.abs(s.x)).toBeLessThan(0.22)
+  it.each(['switch', 'router', 'firewall'] as const)('lays out %s ports inside the panel without overlaps', (type) => {
+    const t = buildTopology({ devices: [{ type, name: 'X', x: 0, y: 0 }] })
+    const d = t.devices[0]
+    const spots = portSpots(d)
+    // Every cabled port has a spot (radios have none).
+    expect(spots.map((s) => s.iface).sort()).toEqual(d.ifaces.map((i) => i.name).filter((n) => n !== 'd0').sort())
+    const p = roomLayout(t).placements[0].panel
+    for (const s of spots) {
+      expect(Math.abs(s.x) + 0.02).toBeLessThanOrEqual(p.w / 2)
+      expect(Math.abs(s.y) + 0.014).toBeLessThanOrEqual(p.h / 2 + 0.005)
+    }
+    // Jacks never overlap (switches pack 48 small ones; other gear keeps roomy spacing).
+    const size = (iface: string) => (type === 'switch' ? switchPortSize(iface, portKind(d, iface)) : { w: 0.035, h: 0.03 })
+    spots.forEach((a, i) =>
+      spots.slice(i + 1).forEach((b) => {
+        const sa = size(a.iface)
+        const sb = size(b.iface)
+        const apart = Math.abs(a.x - b.x) >= (sa.w + sb.w) / 2 + 0.001 || Math.abs(a.y - b.y) >= (sa.h + sb.h) / 2 + 0.001
+        expect(apart, `${a.iface}/${b.iface}`).toBe(true)
+      }),
+    )
+    if (type === 'switch') {
+      const network = spots.filter((s) => s.iface !== 'con0')
+      expect(new Set(network.map((s) => s.y)).size).toBe(2)
+    }
   })
 })
 
@@ -104,6 +204,36 @@ describe('connectPorts', () => {
     expect(typeof l).not.toBe('string')
     expect(linkOn(t, sw.id, 'fa0/5')).toBeDefined()
     expect(connectPorts(t, pc2.id, 'eth0', sw.id, 'fa0/5')).toMatch(/already has a cable/)
-    expect(connectPorts(t, pc2.id, 'eth0', sw.id, 'fa0/9')).toMatch(/Unknown port/)
+    expect(connectPorts(t, pc2.id, 'eth0', sw.id, 'fa0/49')).toMatch(/Unknown port/)
+  })
+})
+
+describe('freeSpot', () => {
+  it('keeps a clear spot and moves a blocked one to the nearest clear point', () => {
+    const t = buildTopology({ devices: [] }, false)
+    for (let k = 0; k < 6; k++) addDevice(t, 'pc', 0, 0).room = 'sales'
+    const L = roomLayout(t)
+    const clear = L.spawn
+    expect(freeSpot(L, clear.x, clear.z)).toEqual(clear)
+    const o = L.obstacles.find((b) => b.maxX - b.minX > 0.5 && b.maxZ - b.minZ > 0.3)!
+    const mx = (o.minX + o.maxX) / 2
+    const mz = (o.minZ + o.maxZ) / 2
+    expect(isBlocked(L, mx, mz)).toBe(true)
+    const s = freeSpot(L, mx, mz)
+    expect(isBlocked(L, s.x, s.z)).toBe(false)
+    expect(Math.hypot(s.x - mx, s.z - mz)).toBeLessThan(2)
+  })
+
+  it('gives every device a clear spot to stand in front of', () => {
+    const t = buildTopology({ devices: [] }, false)
+    for (const room of ['it', 'sales', 'accounting']) {
+      for (let k = 0; k < 5; k++) addDevice(t, 'pc', 0, 0).room = room
+      addDevice(t, 'ap', 0, 0).room = room
+    }
+    const L = roomLayout(t)
+    for (const p of L.placements) {
+      const s = freeSpot(L, p.panel.x, p.panel.z + 1.2, { x: p.panel.x, z: p.panel.z })
+      expect(isBlocked(L, s.x, s.z)).toBe(false)
+    }
   })
 })

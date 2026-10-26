@@ -1,6 +1,9 @@
 import { formatRule, routingTable, sendPacket, type SimState } from './forwarding'
-import { isValidIp, parseCidr, prefixToMask } from './ip'
-import { DEVICE_CATALOG, getDevice, isHost, linkActive, linkOn, setIfaceIp, wifiProblem } from './network'
+import { inSubnet, isValidIp, parseCidr, prefixToMask } from './ip'
+import { servedWlans, serviceProblem } from './wlc'
+import { cableProblem, CABLES, DEVICE_CATALOG, getDevice, isHost, isPhonePcPort, isWifiClient, isRouterLike, linkActive, linkOn, netIfaces, setIfaceIp } from './network'
+import { dhcpRelease, dhcpRequest } from './dhcp'
+import { staticEgress } from './routing'
 import type { Device, FwRule, PingResult, Proto, Topology } from './types'
 
 export type LineKind = 'out' | 'ok' | 'err' | 'info' | 'muted'
@@ -27,11 +30,14 @@ export const HELP: [string, string][] = [
   ['ip set [iface] <ip/prefix>', 'assign an address (iface optional on single-NIC hosts)'],
   ['ip set <iface> none', 'remove an address'],
   ['gateway <ip|none>', 'set the default gateway (PC / server)'],
+  ['dhcp [iface]', 'get an address, mask and gateway from a DHCP server (ipconfig /renew)'],
+  ['dhcp release [iface]', 'give the DHCP address back (ipconfig /release)'],
   ['hostname <name>', 'rename this device'],
   ['ping <ip|device>', 'send ICMP echo and wait for the reply'],
   ['traceroute <ip|device>', 'list the routers a packet crosses'],
   ['tcp <ip|device> <port>', 'test a TCP connection (useful through firewalls)'],
   ['arp -a', 'show the ARP cache'],
+  ['console', 'open the CLI of the device on your console cable (COM1)'],
   ['wifi scan', 'list Wi-Fi networks in range (laptop)'],
   ['wifi connect <ssid> [password]', 'join a Wi-Fi network (laptop)'],
   ['wifi status | wifi disconnect', 'show or drop the Wi-Fi connection (laptop)'],
@@ -48,12 +54,12 @@ export const HELP: [string, string][] = [
 
 function resolveTarget(topo: Topology, arg: string | undefined): string | null {
   if (!arg) return null
+  if (arg.toLowerCase() === 'localhost') return '127.0.0.1'
   if (isValidIp(arg)) return arg
   const d = getDevice(topo, arg)
   return d?.ifaces.find((i) => i.ip)?.ip ?? null
 }
 
-const isRouterLike = (d: Device) => d.type === 'router' || d.type === 'firewall'
 
 export function execute(
   topo: Topology,
@@ -69,7 +75,15 @@ export function execute(
   const err = (t: string): CommandResult => ({ lines: [out(t, 'err')] })
   const L2 = DEVICE_CATALOG[dev.type].layer === 2
 
+  // Windows / Linux spellings of the DHCP client.
+  const lower = input.trim().toLowerCase()
+  if (lower === 'ipconfig /renew' || lower === 'dhclient') return dhcpClient(topo, state, dev, [])
+  if (lower === 'ipconfig /release' || lower === 'dhclient -r') return dhcpClient(topo, state, dev, ['release'])
+
   switch (cmd.toLowerCase()) {
+    case 'dhcp':
+      return dhcpClient(topo, state, dev, rest)
+
     case 'help':
     case '?':
       return {
@@ -91,15 +105,29 @@ export function execute(
         const peer = l && (l.a.device === dev.id && l.a.iface === i.name ? l.b : l.a)
         const peerDev = peer && getDevice(topo, peer.device)
         const status = l ? (l.up ? 'UP' : 'DOWN') : 'no cable'
+        if (i.name === 'com1') {
+          lines.push(out(l ? `com1: console cable to ${peerDev?.name} (type "console" to open it)` : 'com1: serial port, no console cable', l ? 'ok' : 'muted'))
+          continue
+        }
+        const problem = l && cableProblem(topo, l)
+        if (problem) {
+          lines.push(out(`${i.name}: DOWN  -> ${peerDev?.name} ${peer!.iface}  (wrong cable)`, 'err'))
+          lines.push(out(`    ${problem}`, 'muted'))
+          if (i.ip) lines.push(out(`    inet ${i.ip}/${i.prefix}  netmask ${prefixToMask(i.prefix!)}`))
+          continue
+        }
         if (l?.wifi) {
           const up = linkActive(topo, l)
           lines.push(out(`${i.name}: ${up ? 'CONNECTED' : 'DISCONNECTED'}  ssid "${l.wifi.ssid}" via ${peerDev?.name ?? '?'}`, up ? 'ok' : 'err'))
         } else if (i.name === 'wlan0') lines.push(out(`${i.name}: not connected (wifi scan, wifi connect <ssid>)`, 'muted'))
-        else lines.push(out(`${i.name}: ${i.shutdown ? 'ADMIN DOWN' : status}${peerDev ? `  -> ${peerDev.name} ${peer!.iface}` : ''}`, l ? 'ok' : 'muted'))
+        else lines.push(out(`${i.name}: ${i.shutdown ? 'ADMIN DOWN' : status}${peerDev ? `  -> ${peerDev.name} ${peer!.iface}  (${CABLES[l!.cable ?? 'straight'].label.toLowerCase()})` : ''}`, l ? 'ok' : 'muted'))
         lines.push(out(`    ether ${i.mac}`, 'muted'))
-        if (i.ip) lines.push(out(`    inet ${i.ip}/${i.prefix}  netmask ${prefixToMask(i.prefix!)}`))
+        if (i.ip) lines.push(out(`    inet ${i.ip}/${i.prefix}  netmask ${prefixToMask(i.prefix!)}${i.dhcp ? '  (DHCP)' : ''}`))
       }
-      if (isHost(dev)) lines.push(out(`default gateway: ${dev.gateway ?? '(none)'}`, 'info'))
+      if (isHost(dev)) {
+        lines.push(out('lo: UP  (loopback, always on)', 'ok'), out('    inet 127.0.0.1/8  netmask 255.0.0.0', 'muted'))
+        lines.push(out(`default gateway: ${dev.gateway ?? '(none)'}`, 'info'))
+      }
       return { lines }
     }
 
@@ -109,8 +137,9 @@ export function execute(
       let iface: string
       let cidr: string | undefined
       if (rest.length === 2) {
-        if (dev.ifaces.length !== 1) return err(`${dev.name} has several interfaces: ip set <iface> <ip/prefix>`)
-        iface = dev.ifaces[0].name
+        const net = netIfaces(dev).filter((i) => !isPhonePcPort(dev, i.name))
+        if (net.length !== 1) return err(`${dev.name} has several interfaces: ip set <iface> <ip/prefix>`)
+        iface = net[0].name
         cidr = rest[1]
       } else {
         iface = rest[1]
@@ -194,7 +223,7 @@ export function execute(
 
     case 'show': {
       const what = rest.join(' ')
-      if (what === 'ip route' || what === 'route') return showRoutes(dev)
+      if (what === 'ip route' || what === 'route') return showRoutes(topo, dev)
       if (what === 'mac' || what === 'mac-address-table') {
         if (!L2) return err('show mac is only available on switches')
         const entries = Object.entries(state.mac[dev.id] ?? {})
@@ -208,7 +237,7 @@ export function execute(
     }
 
     case 'route': {
-      if (rest[0] === undefined || rest[0] === 'print') return showRoutes(dev)
+      if (rest[0] === undefined || rest[0] === 'print') return showRoutes(topo, dev)
       if (!isRouterLike(dev)) return err('Only routers and firewalls have static routes. Hosts use: gateway <ip>')
       if (rest[0] === 'add') {
         const [netArg, via, gw] = rest.slice(1)
@@ -216,7 +245,7 @@ export function execute(
         const net = netArg === 'default' ? { ip: '0.0.0.0', prefix: 0 } : parseCidr(netArg ?? '', -1)
         if (!net || net.prefix < 0) return err('Network must be in CIDR form, e.g. 10.0.2.0/24')
         dev.routes.push({ network: net.ip, prefix: net.prefix, via: gw })
-        const reachable = routingTable(dev).some((r) => r.kind === 'static' && r.nextHop === gw)
+        const reachable = dev.ifaces.some((i) => i.ip && !i.shutdown && inSubnet(gw, i.ip, i.prefix!))
         return {
           lines: [
             out(`route ${net.ip}/${net.prefix} via ${gw} added`, 'ok'),
@@ -266,20 +295,18 @@ export function execute(
   }
 }
 
-/** Networks a laptop can see: every AP radio that is up and serving an SSID. */
+/** Networks a laptop can see: every SSID an AP serves, whether autonomous or from a WLC it joined. */
 function networksInRange(topo: Topology) {
   return topo.devices.flatMap((ap) => {
-    const w = ap.ios?.wlan
     const radio = ap.ifaces.find((i) => i.name === 'd0')
-    if (ap.type !== 'ap' || !w?.radioSsid || !radio || radio.shutdown) return []
-    const s = w.ssids[w.radioSsid]
-    return s ? [{ ap, ssid: w.radioSsid, cfg: s, mac: radio.mac }] : []
+    if (ap.type !== 'ap' || !radio) return []
+    return servedWlans(topo, ap).map((w) => ({ ap, ssid: w.ssid, cfg: w, mac: radio.mac }))
   })
 }
 
 function wifi(topo: Topology, dev: Device, rest: string[]): CommandResult {
   const err = (t: string): CommandResult => ({ lines: [out(t, 'err')] })
-  if (dev.type !== 'laptop') return err(`${dev.name} has no wireless adapter. Laptops join Wi-Fi; PCs and servers use cables.`)
+  if (!isWifiClient(dev)) return err(`${dev.name} has no wireless adapter. Laptops and smartphones join Wi-Fi; PCs and servers use cables.`)
   const current = linkOn(topo, dev.id, 'wlan0')
   const [sub, ssid, ...pw] = rest
   switch (sub) {
@@ -300,7 +327,7 @@ function wifi(topo: Topology, dev: Device, rest: string[]): CommandResult {
       if (!nets.length) return err(`No network named "${ssid}" in range`)
       const key = pw.length ? pw.join(' ') : undefined
       if (nets[0].cfg.wpa2 && !key) return err(`"${ssid}" is secured with WPA2: wifi connect ${ssid} <password>`)
-      const problems = nets.map((n) => wifiProblem(n.ap, ssid, key))
+      const problems = nets.map((n) => serviceProblem(topo, n.ap, ssid, key))
       const k = problems.findIndex((p) => p === null)
       if (k < 0) {
         if (problems.includes('wrong password')) return err('Authentication failed: wrong password (4-way handshake failed)')
@@ -333,7 +360,7 @@ function wifi(topo: Topology, dev: Device, rest: string[]): CommandResult {
       return {
         lines: [
           out(`wlan0: ${up ? 'connected' : 'DISCONNECTED'} to "${current.wifi.ssid}" via ${ap?.name}`, up ? 'ok' : 'err'),
-          ...(up || !ap ? [] : [out(`  ↳ ${wifiProblem(ap, current.wifi.ssid, current.wifi.key)}`, 'muted')]),
+          ...(up || !ap ? [] : [out(`  ↳ ${serviceProblem(topo, ap, current.wifi.ssid, current.wifi.key)}`, 'muted')]),
         ],
       }
     }
@@ -342,14 +369,29 @@ function wifi(topo: Topology, dev: Device, rest: string[]): CommandResult {
   }
 }
 
-function showRoutes(dev: Device): CommandResult {
+/** The NIC a host uses for DHCP: the one named, else its only network interface. */
+function dhcpClient(topo: Topology, state: SimState, dev: Device, rest: string[]): CommandResult {
+  if (!isHost(dev)) return { lines: [out('Routers ask for an address on an interface: interface g0/1 → ip address dhcp', 'err')] }
+  const release = rest[0] === 'release'
+  const named = release ? rest[1] : rest[0]
+  const nics = netIfaces(dev).filter((i) => !isPhonePcPort(dev, i.name))
+  const iface = named ? nics.find((i) => i.name === named) : nics[0]
+  if (!iface) return { lines: [out(`No interface ${named ?? ''} on ${dev.name}`, 'err')] }
+  if (release) return { lines: dhcpRelease(topo, dev, iface.name), mutated: true }
+  const r = dhcpRequest(topo, state, dev, iface.name)
+  return { lines: r.lines, mutated: r.ok }
+}
+
+const KIND_LETTER: Record<string, string> = { connected: 'C', static: 'S', dhcp: 'S', ospf: 'O', 'ospf-ia': 'O', 'ospf-e2': 'O', eigrp: 'D', rip: 'R', ebgp: 'B', ibgp: 'B' }
+
+function showRoutes(topo: Topology, dev: Device): CommandResult {
   if (DEVICE_CATALOG[dev.type].layer === 2) return { lines: [out('Switches do not route', 'err')] }
-  const rows = routingTable(dev)
+  const rows = routingTable(topo, dev)
   const lines: Line[] = [out('Type  Network             Next hop         Iface', 'info')]
   for (const r of rows) {
     lines.push(
       out(
-        `${r.kind === 'connected' ? 'C' : 'S'}     ${(r.network + '/' + r.prefix).padEnd(20)}${(r.kind === 'connected' ? 'connected' : r.nextHop).padEnd(17)}${r.iface.name}`,
+        `${KIND_LETTER[r.kind] ?? 'S'}     ${(r.network + '/' + r.prefix).padEnd(20)}${(r.kind === 'connected' ? 'connected' : r.nextHop).padEnd(17)}${r.iface.name}`,
       ),
     )
   }
@@ -357,8 +399,10 @@ function showRoutes(dev: Device): CommandResult {
   dev.routes.forEach((r, n) => {
     if (!rows.some((x) => x.kind === 'static' && x.network === r.network && x.prefix === r.prefix && x.nextHop === r.via))
       lines.push(out(`S#${n + 1}   ${(r.network + '/' + r.prefix).padEnd(20)}${r.via.padEnd(17)}INACTIVE`, 'err'))
+    if (!staticEgress(dev, r)) lines.push(out(`S#${n + 1}   ${(r.network + '/' + r.prefix).padEnd(20)}${(r.via || r.iface || '').padEnd(17)}INACTIVE`, 'err'))
   })
   if (dev.routes.length) lines.push(out(`static routes: ${dev.routes.map((r, n) => `#${n + 1} ${r.network}/${r.prefix} via ${r.via}`).join(', ')}`, 'muted'))
+  if (dev.routes.length) lines.push(out(`static routes: ${dev.routes.map((r, n) => `#${n + 1} ${r.network}/${r.prefix} via ${r.via || r.iface}`).join(', ')}`, 'muted'))
   if (lines.length === 1) lines.push(out('(empty — configure an interface IP first)', 'muted'))
   return { lines }
 }

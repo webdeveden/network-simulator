@@ -16,11 +16,40 @@ defineProps<{ type: DeviceType; size?: number }>()
       <path d="M3 23h26l-2-4H5z" />
       <path d="M13 13.5a4 4 0 0 1 6 0M14.6 15.6a1.6 1.6 0 0 1 2.8 0" stroke-width="1.1" />
     </template>
+    <template v-else-if="type === 'mobile'">
+      <rect x="10" y="3" width="12" height="26" rx="2.5" />
+      <path d="M14 6h4M15 26h2" stroke-width="1.4" />
+    </template>
     <template v-else-if="type === 'ap'">
       <rect x="5" y="19" width="22" height="7" rx="1.5" />
       <path d="M10 19v-8M22 19v-8" />
       <path d="M11.5 12.5a6 6 0 0 1 9 0M9 9.5a10 10 0 0 1 14 0" stroke-width="1.2" />
       <circle cx="9" cy="22.5" r=".8" fill="currentColor" />
+    </template>
+    <template v-else-if="type === 'patch'">
+      <rect x="2" y="10" width="28" height="12" rx="1" />
+      <path d="M5 14h2M8.5 14h2M12 14h2M15.5 14h2M19 14h2M22.5 14h2M26 14h1M5 18h2M8.5 18h2M12 18h2M15.5 18h2M19 18h2M22.5 18h2M26 18h1" stroke-width="1.6" />
+    </template>
+    <template v-else-if="type === 'modem'">
+      <rect x="4" y="13" width="24" height="10" rx="2" />
+      <path d="M8 13l3-6M24 13l-3-6" />
+      <circle cx="9" cy="18" r=".9" fill="currentColor" />
+      <circle cx="13" cy="18" r=".9" fill="currentColor" />
+      <circle cx="17" cy="18" r=".9" fill="currentColor" />
+    </template>
+    <template v-else-if="type === 'printer'">
+      <path d="M9 12V5h14v7" />
+      <rect x="4" y="12" width="24" height="10" rx="1.5" />
+      <path d="M9 19h14v8H9z" />
+    </template>
+    <template v-else-if="type === 'phone'">
+      <rect x="5" y="9" width="22" height="15" rx="2" />
+      <path d="M8 9c0-4 4-5 8-5s8 1 8 5" />
+      <rect x="15" y="12" width="9" height="5" rx=".5" stroke-width="1.2" />
+      <path d="M8 13h4M8 16h4M8 19h4M16 20h7" stroke-width="1.2" />
+    </template>
+    <template v-else-if="type === 'isp'">
+      <path d="M9 24c-4 0-5-5-1.5-6.3C7 14 11 12 13.5 14 15 10 21 10 22 14.5c3.5-.8 6 2.5 4.3 5C28.5 21 27 24.5 24 24.5z" />
     </template>
     <template v-else-if="type === 'server'">
       <rect x="7" y="3" width="18" height="8" rx="1" />
@@ -38,6 +67,18 @@ defineProps<{ type: DeviceType; size?: number }>()
     <template v-else-if="type === 'router'">
       <ellipse cx="16" cy="16" rx="13" ry="9" />
       <path d="M16 9v5M14 12l2 2 2-2M16 23v-5M14 20l2-2 2 2M8 16h5M11 14l2 2-2 2M24 16h-5M21 14l-2 2 2 2" stroke-width="1.3" />
+    </template>
+    <template v-else-if="type === 'wlc'">
+      <rect x="2" y="12" width="28" height="9" rx="1.5" />
+      <circle cx="7" cy="16.5" r="1" fill="currentColor" />
+      <path d="M16 11V6M12.5 8.5a5 5 0 017 0M10.5 6.5a8 8 0 0111 0" stroke-width="1.2" fill="none" />
+    </template>
+    <template v-else-if="type === 'attacker'">
+      <rect x="6" y="6" width="20" height="14" rx="1" />
+      <path d="M4 23h24l-2-3H6z" />
+      <circle cx="12" cy="12" r="1.6" fill="currentColor" />
+      <circle cx="20" cy="12" r="1.6" fill="currentColor" />
+      <path d="M13 16h6M14.5 16v2M17.5 16v2" stroke-width="1.1" />
     </template>
     <template v-else>
       <rect x="3" y="6" width="26" height="20" rx="1" />
