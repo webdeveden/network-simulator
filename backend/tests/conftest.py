@@ -1,23 +1,31 @@
 import os
 
 os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
-os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-at-least-32-bytes")
+os.environ.setdefault("NETSIM_SECRET_KEY", "test-secret-key-that-is-at-least-32-bytes")
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 from sqlmodel import SQLModel
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
 from app.main import app
 
-test_engine = create_async_engine(
-    "sqlite+aiosqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
+# Set TEST_DATABASE_URL (CI does) to run against Postgres; otherwise in-memory SQLite.
+TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+
+if TEST_DATABASE_URL.startswith("sqlite"):
+    # One shared connection, or each session would get its own empty in-memory DB
+    test_engine = create_async_engine(
+        TEST_DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+else:
+    # No pooling: each test runs in its own event loop, and asyncpg connections can't cross loops
+    test_engine = create_async_engine(TEST_DATABASE_URL, poolclass=NullPool)
 
 
 async def _override_get_session():

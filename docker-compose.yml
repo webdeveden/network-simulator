@@ -26,7 +26,7 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-netsim}:${POSTGRES_PASSWORD:-netsim}@db:5432/${POSTGRES_DB:-netsim}
-      SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env}
+      NETSIM_SECRET_KEY: ${NETSIM_SECRET_KEY:?set NETSIM_SECRET_KEY in .env}
       ALLOWED_ORIGINS: "http://localhost:8090"
     ports:
       - "8011:8000"
