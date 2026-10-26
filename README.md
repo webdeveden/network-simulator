@@ -149,10 +149,16 @@ The backend stores user accounts, saved sandbox networks and mission progress. M
 
 ```bash
 # backend → http://localhost:8010
+cp .env.example .env                    # once, then set NETSIM_SECRET_KEY (the backend won't start without it)
 cd backend
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/alembic upgrade head          # creates ./netsim.db (SQLite)
-.venv/bin/uvicorn app.main:app --reload --port 8010
+uv sync                                 # creates .venv from uv.lock (incl. dev tools)
+uv run alembic upgrade head             # creates ./netsim.db (SQLite)
+uv run uvicorn app.main:app --reload --port 8010
+uv run pytest                           # backend tests (in-memory SQLite)
+# same tests on Postgres, like CI. Use a separate DB: the tests drop every table when they finish.
+docker compose up -d db && docker compose exec db createdb -U netsim netsim_test   # once
+TEST_DATABASE_URL=postgresql+asyncpg://netsim:netsim@localhost:5435/netsim_test uv run pytest
+# add a dependency: uv add <pkg>   (dev-only: uv add --dev <pkg>)
 
 # frontend → http://localhost:5273 (proxies /api to :8010)
 cd frontend
@@ -163,7 +169,7 @@ npm run dev
 ## Run with Docker
 
 ```bash
-cp .env.example .env   # then set SECRET_KEY
+cp .env.example .env   # then set NETSIM_SECRET_KEY
 docker compose up --build
 ```
 

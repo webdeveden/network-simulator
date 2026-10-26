@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  # PRs into main: test + build images (not published)
+  pull_request:
+    branches: [main]
+  # Merges into main: test + build + publish images to GHCR
+  push:
+    branches: [main]
+  # "Run workflow" button in the Actions tab (available once this file is on main)
+  workflow_dispatch:
+
+# A newer push to the same branch/PR cancels the outdated run
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege by default; the publish job asks for more
+permissions:
+  contents: read
+
+jobs:
+  backend-test:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+
+    # Throwaway Postgres for the migration check and the tests. Same version as docker-compose.yml.
+    # The job runs directly on the runner VM, so it reaches this container via localhost + the mapped port.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # app.config requires NETSIM_SECRET_KEY (alembic and pytest both load it). A fresh random one per run,
+      # so no key is stored anywhere. Lines written to $GITHUB_ENV become env vars for all later steps.
+      - name: Generate test NETSIM_SECRET_KEY
+        run: echo "NETSIM_SECRET_KEY=$(openssl rand -hex 32)" >> "$GITHUB_ENV"
+
+      # Installs uv; Python 3.12 comes from backend/.python-version (matches backend/Dockerfile)
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "0.13.5" # match backend/Dockerfile
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      # --frozen: fail if uv.lock is out of date with pyproject.toml. Includes the dev group (pytest).
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Same command docker-compose runs on startup; catches migrations that only work on SQLite
+      - name: Migrations apply on Postgres
+        env:
+          DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/test
+        run: uv run --frozen alembic upgrade head
+
+      - name: Run pytest on Postgres
+        env:
+          # Read by tests/conftest.py; without it the tests use in-memory SQLite
+          TEST_DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/test
+        # -rxs: list skipped and xfailed tests at the end
+        run: uv run --frozen pytest -rxs
+
+  frontend-test:
+    name: Frontend test, typecheck, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24" # match frontend/Dockerfile
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      # vue-tsc -b runs first, so type errors fail here
+      - name: Typecheck and build
+        run: npm run build
+
+  images:
+    name: Image (${{ matrix.service }})
+    # Only build images once both test jobs pass
+    needs: [backend-test, frontend-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write # push to ghcr.io with GITHUB_TOKEN
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [backend, frontend]
+
+    env:
+      # Publish only from main; PRs and other branches just prove the image builds
+      PUBLISH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          # e.g. ghcr.io/webdeveden/netsim-backend
+          images: ghcr.io/${{ github.repository_owner }}/netsim-${{ matrix.service }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=pr
+
+      - name: Build${{ env.PUBLISH == 'true' && ' and push' || '' }}
+        uses: docker/build-push-action@v7
+        with:
+          context: ./${{ matrix.service }}
+          push: ${{ env.PUBLISH == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Reuse layers between runs (GitHub Actions cache), one cache per image
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}

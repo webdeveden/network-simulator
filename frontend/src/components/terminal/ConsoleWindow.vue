@@ -15,7 +15,6 @@ const ws = useWorkspace()
 const root = ref<HTMLDivElement>()
 const term = ref<InstanceType<typeof TerminalPane>>()
 const device = computed(() => getDevice(ws.topo, props.win.deviceId))
-type Tab = 'console' | 'putty' | 'notes' | 'learn'
 type Tab = 'console' | 'putty' | 'notes' | 'learn' | 'dashboard'
 const tab = ref<Tab>('console')
 if (device.value?.type === 'wlc') tab.value = 'dashboard'
@@ -23,11 +22,6 @@ if (device.value?.type === 'wlc') tab.value = 'dashboard'
 /** The admin PC (a PC or laptop at the server room desk) also keeps Notes with every device's IP. */
 const isAdminPc = computed(() => !!device.value && (device.value.type === 'pc' || device.value.type === 'laptop') && roomOf(device.value, ws.topo) === 'server')
 const tabs = computed<Tab[]>(() =>
-  device.value?.type === 'pc' || device.value?.type === 'laptop'
-    ? isAdminPc.value
-      ? ['console', 'putty', 'notes', 'learn']
-      : ['console', 'putty', 'learn']
-    : ['console', 'learn'],
   device.value?.type === 'wlc'
     ? ['dashboard', 'learn']
     : device.value?.type === 'pc' || device.value?.type === 'laptop'
