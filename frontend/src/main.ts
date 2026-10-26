@@ -5,6 +5,16 @@ import App from './App.vue'
 import { useAuth } from './stores/auth'
 import './style.css'
 
+// After a deploy, an open tab may ask for page files that no longer exist (new hashed names).
+// Reload once to get the new index.html; the flag stops an endless loop if the file is really missing.
+window.addEventListener('vite:preloadError', (event) => {
+  if (sessionStorage.getItem('reloadedAfterDeploy')) return
+  sessionStorage.setItem('reloadedAfterDeploy', '1')
+  event.preventDefault()
+  window.location.reload()
+})
+window.addEventListener('load', () => sessionStorage.removeItem('reloadedAfterDeploy'))
+
 const router = createRouter({
   history: createWebHistory(),
   routes: [
