@@ -1,16 +1,38 @@
 name: Greetings
 
-on: [pull_request_target, issues]
+# Comment once on every new issue and PR (not only a person's first one).
+# pull_request_target runs with write access even for fork PRs, so this workflow
+# must never check out or run the PR's code: it only posts a comment.
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
 
 jobs:
   greeting:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
+    timeout-minutes: 5
     steps:
-    - uses: actions/first-interaction@v1
-      with:
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-        issue-message: "Thank you so much ${{ github.actor }} for reporting this issue"
-        pr-message: "Thank you for handling this issue ${{ github.actor }}, I'll review your PR ASAP"
+      - name: Thank the author when any PR is opened
+        if: github.event_name == 'pull_request_target'
+        # Values go in through env, never ${{ }} inside the script, so text from the PR can't inject shell
+        run: gh pr comment "$NUMBER" --repo "$REPO" --body "Thank you for handling this issue @$AUTHOR, I'll review your PR ASAP"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+
+      - name: Thank the author when any issue is opened
+        if: github.event_name == 'issues'
+        run: gh issue comment "$NUMBER" --repo "$REPO" --body "Thank you so much @$AUTHOR for reporting this issue"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          AUTHOR: ${{ github.event.issue.user.login }}
