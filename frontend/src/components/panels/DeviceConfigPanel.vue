@@ -204,6 +204,7 @@ function doPing() {
       </div>
 
       <p v-if="ws.selectedDevice.type === 'ap'" class="mt-1 text-[10px] text-dim">
+        Configure Wi-Fi from the console: dot11 ssid, then interface Dot11Radio0.
         Autonomous Wi-Fi from the console: dot11 ssid, then interface Dot11Radio0. Or cable a WLC in and this AP joins it (lightweight).
       </p>
 

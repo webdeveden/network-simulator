@@ -6,6 +6,7 @@ import { useWorkspace, type ConsoleWin } from '../../stores/workspace'
 import LearnPanel from './LearnPanel.vue'
 import NotesPanel from './NotesPanel.vue'
 import PuttyPanel from './PuttyPanel.vue'
+import WlcPanel from '../panels/WlcPanel.vue'
 import { roomOf } from '../../room/layout'
 import TerminalPane from './TerminalPane.vue'
 
@@ -15,7 +16,9 @@ const root = ref<HTMLDivElement>()
 const term = ref<InstanceType<typeof TerminalPane>>()
 const device = computed(() => getDevice(ws.topo, props.win.deviceId))
 type Tab = 'console' | 'putty' | 'notes' | 'learn'
+type Tab = 'console' | 'putty' | 'notes' | 'learn' | 'dashboard'
 const tab = ref<Tab>('console')
+if (device.value?.type === 'wlc') tab.value = 'dashboard'
 /** PCs and laptops get a PuTTY tab for SSH/serial sessions to network devices. */
 /** The admin PC (a PC or laptop at the server room desk) also keeps Notes with every device's IP. */
 const isAdminPc = computed(() => !!device.value && (device.value.type === 'pc' || device.value.type === 'laptop') && roomOf(device.value, ws.topo) === 'server')
@@ -25,6 +28,13 @@ const tabs = computed<Tab[]>(() =>
       ? ['console', 'putty', 'notes', 'learn']
       : ['console', 'putty', 'learn']
     : ['console', 'learn'],
+  device.value?.type === 'wlc'
+    ? ['dashboard', 'learn']
+    : device.value?.type === 'pc' || device.value?.type === 'laptop'
+      ? isAdminPc.value
+        ? ['console', 'putty', 'notes', 'learn']
+        : ['console', 'putty', 'learn']
+      : ['console', 'learn'],
 )
 
 function openSession(cmd: string) {
@@ -116,6 +126,7 @@ onMounted(() => {
       <span class="truncate">
         <span :class="front ? 'text-neon' : 'text-dim'">●</span>
         {{ device && isIos(device) ? 'COM1 · serial console' : 'terminal' }} · {{ device?.name ?? '(deleted)' }}
+        {{ device?.type === 'wlc' ? 'WLC dashboard' : device && isIos(device) ? 'COM1 · serial console' : 'terminal' }} · {{ device?.name ?? '(deleted)' }}
       </span>
       <button class="px-1 text-dim hover:text-danger" title="Close (Esc)" @click="ws.closeConsole(win.deviceId)">✕</button>
     </div>
@@ -128,6 +139,7 @@ onMounted(() => {
         @click="selectTab(t)"
       >
         {{ t === 'console' ? 'Console' : t === 'putty' ? 'PuTTY' : t === 'notes' ? 'Notes' : 'Learn' }}
+        {{ t === 'console' ? 'Console' : t === 'putty' ? 'PuTTY' : t === 'notes' ? 'Notes' : t === 'dashboard' ? 'Dashboard' : 'Learn' }}
       </button>
     </div>
     <!-- v-show keeps the terminal session and scrollback while reading lessons -->
@@ -140,6 +152,9 @@ onMounted(() => {
     </div>
     <div v-if="tab === 'putty'" class="min-h-0 flex-1">
       <PuttyPanel :device-id="win.deviceId" @open="openSession" />
+    </div>
+    <div v-if="tab === 'dashboard'" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 text-xs">
+      <WlcPanel :device-id="win.deviceId" />
     </div>
     <div v-show="tab === 'learn'" class="min-h-0 flex-1">
       <LearnPanel :device-id="win.deviceId" @type="typeCommand" />
