@@ -18,18 +18,36 @@ services:
       timeout: 5s
       retries: 10
 
+  # Short-lived data: failed-login counters and cached API responses. No volume and no published
+  # port: losing it on restart is fine (Postgres is the source of truth), and only the backend
+  # needs it. Inspect with: docker compose exec redis redis-cli
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-netsim}:${POSTGRES_PASSWORD:-netsim}@db:5432/${POSTGRES_DB:-netsim}
       NETSIM_SECRET_KEY: ${NETSIM_SECRET_KEY:?set NETSIM_SECRET_KEY in .env}
       ALLOWED_ORIGINS: "http://localhost:8090"
+      REDIS_URL: redis://redis:6379/0
+      # Trust X-Forwarded-For so the backend sees the browser's IP, not nginx's (rate limiting needs it).
+      # Safe only because nginx is the sole way in from outside: the port below is this Mac only.
+      FORWARDED_ALLOW_IPS: "*"
     ports:
-      - "8011:8000"
+      - "127.0.0.1:8011:8000"
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
