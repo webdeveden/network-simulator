@@ -16,6 +16,8 @@ dependencies = [
     "pyjwt>=2.8",
     "bcrypt>=4.1",
     "redis>=5.0",
+    "prometheus-client>=0.20",
+    "prometheus-fastapi-instrumentator>=7.0",
 ]
 
 # Installed by `uv sync` (local, CI); skipped in the Docker image with --no-dev

@@ -195,6 +195,26 @@ docker compose exec redis redis-cli DEL login:fail:<ip>:<username>      # unbloc
 read comes fresh from Postgres. The `X-Cache: HIT` / `MISS` response header (browser Network tab, or
 `curl -i`) shows which one answered. With Redis down, it reads the database every time.
 
+### Monitoring (Prometheus + Grafana)
+
+`docker compose up` also starts the monitoring stack (config in [monitoring/](monitoring/)):
+
+| | URL | What |
+|---|---|---|
+| Grafana | http://localhost:3000 (user `admin`, password `GRAFANA_ADMIN_PASSWORD` or `admin`) | The **NetSim** dashboard: traffic, errors, latency, login attacks, cache hit ratio, Redis, Postgres |
+| Prometheus | http://localhost:9090 | Raw metrics (Graph tab), scrape targets (Status → Targets), alerts (Alerts tab) |
+
+The backend serves its numbers at `GET /metrics` (inside the Docker network only; nginx doesn't forward it).
+Custom counters are in [backend/app/metrics.py](backend/app/metrics.py). Redis and Postgres are measured by
+`redis-exporter` and `postgres-exporter`. Alert rules are in
+[monitoring/prometheus/alerts.yml](monitoring/prometheus/alerts.yml); try the brute-force one by entering a wrong
+password about a dozen times, then watch it go pending → firing in Prometheus' Alerts tab.
+
+After editing `prometheus.yml` or `alerts.yml`: `curl -X POST localhost:9090/-/reload`.
+After editing the dashboard JSON: `docker compose restart grafana`. The JSON can be edited in Grafana and
+exported over the file, or regenerated with `python3 monitoring/grafana/build_dashboard.py` (one `panel()`
+call per panel: title, PromQL query, position).
+
 ## Tests
 
 ```bash

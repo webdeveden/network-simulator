@@ -1,0 +1,10 @@
+# Loads every dashboard JSON file from the folder below on startup (dashboards as code).
+# To change a dashboard: edit it in Grafana, then Share > Export > JSON, and save it over the file.
+apiVersion: 1
+providers:
+  - name: netsim
+    folder: NetSim
+    type: file
+    allowUiUpdates: true     # you may experiment in the UI; a restart reloads the file
+    options:
+      path: /etc/grafana/dashboards

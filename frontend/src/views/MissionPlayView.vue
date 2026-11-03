@@ -5,10 +5,12 @@ import Workspace from '../components/Workspace.vue'
 import { buildTopology } from '../engine/network'
 import { evaluate, stars } from '../engine/objectives'
 import { errorMessage, type Mission } from '../lib/api'
+import { useAuth } from '../stores/auth'
 import { useMissions } from '../stores/missions'
 import { useWorkspace } from '../stores/workspace'
 
 const props = defineProps<{ id: string }>()
+const auth = useAuth()
 const missions = useMissions()
 const ws = useWorkspace()
 
@@ -66,7 +68,9 @@ watch(allDone, async (done) => {
   try {
     await missions.complete(m.id, r.stars, r.time, r.cost, ws.topo)
   } catch (e) {
-    result.value = { ...r, saveError: errorMessage(e) }
+    // A 401 logs us out (see the auth store), so the message can say why
+    const saveError = auth.user ? errorMessage(e) : 'your login expired. Log in again and it will be saved.'
+    result.value = { ...r, saveError }
   }
 })
 
@@ -135,7 +139,10 @@ const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${Str
         <div class="mt-3 text-xs text-dim">
           time {{ fmt(result.time) }} · cost ${{ result.cost }}
         </div>
-        <div v-if="result.saveError" class="mt-2 text-[11px] text-danger">Progress not saved: {{ result.saveError }}</div>
+        <div v-if="result.saveError" class="mt-2 text-[11px] text-danger">
+          Progress not saved: {{ result.saveError }}
+          <RouterLink v-if="!auth.user" to="/login" class="underline">log in</RouterLink>
+        </div>
         <div class="mt-6 flex justify-center gap-2">
           <button class="btn" @click="start">retry</button>
           <RouterLink to="/missions" class="btn">missions</RouterLink>

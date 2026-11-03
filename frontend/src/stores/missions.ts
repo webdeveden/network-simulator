@@ -1,9 +1,34 @@
+import axios from 'axios'
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { api, errorMessage, type Mission, type ProgressEntry } from '../lib/api'
 import { useAuth } from './auth'
 
 const GUEST_PROGRESS_KEY = 'netsim.guestProgress'
+const PENDING_KEY = 'netsim.pendingCompletions'
+
+/** A completion the server refused because the login expired, sent again after the next login. */
+interface PendingCompletion {
+  userId: number
+  missionId: string
+  stars: number
+  time: number
+  cost: number
+  topology: unknown
+}
+
+function readPending(): PendingCompletion[] {
+  try {
+    return JSON.parse(localStorage.getItem(PENDING_KEY) ?? '[]')
+  } catch {
+    return []
+  }
+}
+
+function writePending(list: PendingCompletion[]) {
+  if (list.length) localStorage.setItem(PENDING_KEY, JSON.stringify(list))
+  else localStorage.removeItem(PENDING_KEY)
+}
 
 export const useMissions = defineStore('missions', () => {
   const list = ref<Mission[]>([])
@@ -23,6 +48,7 @@ export const useMissions = defineStore('missions', () => {
   async function loadProgress() {
     const auth = useAuth()
     if (auth.user) {
+      await flushPending(auth.user.id)
       try {
         const entries = (await api.get<ProgressEntry[]>('/progress')).data
         progress.value = Object.fromEntries(entries.map((p) => [p.mission_id, p]))
@@ -54,10 +80,19 @@ export const useMissions = defineStore('missions', () => {
   async function complete(missionId: string, stars: number, time: number, cost: number, topology: unknown) {
     const auth = useAuth()
     if (auth.user) {
-      const entry = (
-        await api.post<ProgressEntry>(`/missions/${missionId}/complete`, { stars, time, cost, topology })
-      ).data
-      progress.value[missionId] = entry
+      // Read before the request: a 401 logs us out (see the auth store) before the catch runs
+      const userId = auth.user.id
+      try {
+        const entry = (
+          await api.post<ProgressEntry>(`/missions/${missionId}/complete`, { stars, time, cost, topology })
+        ).data
+        progress.value[missionId] = entry
+      } catch (e) {
+        if (axios.isAxiosError(e) && e.response?.status === 401) {
+          writePending([...readPending(), { userId, missionId, stars, time, cost, topology }])
+        }
+        throw e
+      }
     } else {
       const prev = progress.value[missionId]
       progress.value[missionId] = {
@@ -68,6 +103,24 @@ export const useMissions = defineStore('missions', () => {
       }
       localStorage.setItem(GUEST_PROGRESS_KEY, JSON.stringify(progress.value))
     }
+  }
+
+  /** Sends queued completions for this user; any that fail stay queued for the next login. */
+  async function flushPending(userId: number) {
+    const left: PendingCompletion[] = []
+    for (const p of readPending()) {
+      if (p.userId !== userId) {
+        left.push(p)
+        continue
+      }
+      try {
+        const { stars, time, cost, topology } = p
+        await api.post(`/missions/${p.missionId}/complete`, { stars, time, cost, topology })
+      } catch {
+        left.push(p)
+      }
+    }
+    writePending(left)
   }
 
   return { list, progress, error, load, loadProgress, get, unlocked, complete }

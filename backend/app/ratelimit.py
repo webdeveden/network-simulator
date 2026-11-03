@@ -10,6 +10,8 @@ from fastapi import Request
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from app.metrics import REDIS_ERRORS
+
 log = logging.getLogger(__name__)
 
 MAX_FAILURES = 5
@@ -35,6 +37,7 @@ async def seconds_blocked(redis: Redis | None, key: str) -> int:
             return 0
         return max(await redis.ttl(key), 1)
     except RedisError:
+        REDIS_ERRORS.labels(operation="ratelimit_check").inc()
         log.warning("Redis unavailable, login rate limit skipped", exc_info=True)
         return 0
 
@@ -50,6 +53,7 @@ async def record_failure(redis: Redis | None, key: str) -> None:
             pipe.expire(key, WINDOW_SECONDS, nx=True)
             await pipe.execute()
     except RedisError:
+        REDIS_ERRORS.labels(operation="ratelimit_record").inc()
         log.warning("Redis unavailable, failed login not counted", exc_info=True)
 
 
@@ -59,4 +63,5 @@ async def clear_failures(redis: Redis | None, key: str) -> None:
     try:
         await redis.delete(key)
     except RedisError:
+        REDIS_ERRORS.labels(operation="ratelimit_clear").inc()
         log.warning("Redis unavailable, failed-login counter not cleared", exc_info=True)

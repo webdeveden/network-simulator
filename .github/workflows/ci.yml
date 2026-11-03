@@ -114,6 +114,26 @@ jobs:
       - name: Typecheck and build
         run: npm run build
 
+  monitoring-config:
+    name: Monitoring config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # promtool ships in the Prometheus image: checks prometheus.yml and the alert rules it loads.
+      # Same version as docker-compose.yml, mounted where the config expects its rule file.
+      - name: Validate Prometheus config and alert rules
+        run: >
+          docker run --rm
+          --mount "type=bind,src=$PWD/monitoring/prometheus,dst=/etc/prometheus,readonly"
+          --entrypoint promtool prom/prometheus:v3.5.0
+          check config /etc/prometheus/prometheus.yml
+
+      # Grafana silently skips a dashboard file it can't parse
+      - name: Validate Grafana dashboard JSON
+        run: python3 -m json.tool monitoring/grafana/dashboards/netsim.json > /dev/null
+
   images:
     name: Image (${{ matrix.service }})
     # Only build images once both test jobs pass

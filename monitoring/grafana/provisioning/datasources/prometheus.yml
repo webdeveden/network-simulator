@@ -1,0 +1,10 @@
+# Loaded by Grafana on startup, so the Prometheus connection exists without clicking through the UI
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus          # dashboards refer to the data source by this id
+    type: prometheus
+    access: proxy            # Grafana's server queries Prometheus, not your browser
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

@@ -5,6 +5,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.cache import cache_delete, cache_get, cache_set
 from app.database import get_session
+from app.metrics import CACHE_REQUESTS
 from app.missions import MISSIONS, MISSIONS_BY_ID
 from app.models import Progress, User, utcnow
 from app.redis_client import get_redis
@@ -83,10 +84,12 @@ async def list_progress(
     # X-Cache shows in the browser's Network tab (and curl -i) whether Redis answered
     if (cached := await cache_get(redis, key)) is not None:
         response.headers["X-Cache"] = "HIT"
+        CACHE_REQUESTS.labels(cache="progress", result="hit").inc()
         return cached
     rows = (await session.exec(select(Progress).where(Progress.user_id == user.id))).all()
     # Cache only the fields the response returns, not each row's saved topology
     progress = [ProgressRead.model_validate(r, from_attributes=True).model_dump() for r in rows]
     await cache_set(redis, key, progress, PROGRESS_TTL_SECONDS)
     response.headers["X-Cache"] = "MISS"
+    CACHE_REQUESTS.labels(cache="progress", result="miss").inc()
     return progress

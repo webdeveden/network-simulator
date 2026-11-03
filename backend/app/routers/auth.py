@@ -4,6 +4,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.database import get_session
+from app.metrics import LOGIN_ATTEMPTS
 from app.models import User
 from app.ratelimit import clear_failures, failed_login_key, record_failure, seconds_blocked
 from app.redis_client import get_redis
@@ -42,6 +43,7 @@ async def login(
     key = failed_login_key(request, body.username)
     # Checked before the password, so a blocked client learns nothing, even with the right one
     if wait := await seconds_blocked(redis, key):
+        LOGIN_ATTEMPTS.labels(result="blocked").inc()
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many failed logins, try again later",
@@ -50,8 +52,10 @@ async def login(
     user = (await session.exec(select(User).where(User.username == body.username))).first()
     if user is None or not verify_password(body.password, user.password_hash):
         await record_failure(redis, key)
+        LOGIN_ATTEMPTS.labels(result="failure").inc()
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid username or password")
     await clear_failures(redis, key)
+    LOGIN_ATTEMPTS.labels(result="success").inc()
     return _token_response(user)
 
 

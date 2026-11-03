@@ -6,6 +6,13 @@ export const useAuth = defineStore('auth', () => {
   const user = ref<User | null>(null)
   const ready = ref(false)
 
+  // The token can stop working mid-session (expired, or the server's secret key changed).
+  // Drop it so the UI stops claiming we're logged in. /auth/* 401s are just wrong passwords.
+  api.interceptors.response.use(undefined, (e) => {
+    if (e.response?.status === 401 && !e.config?.url?.startsWith('/auth/')) logout()
+    return Promise.reject(e)
+  })
+
   async function init() {
     if (ready.value) return
     if (localStorage.getItem(TOKEN_KEY)) {

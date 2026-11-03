@@ -1,0 +1,59 @@
+# Alert rules, checked every evaluation_interval. An alert is "pending" as soon as `expr`
+# returns a result, and "firing" once it has kept returning one for the `for:` duration
+# (so a single blip doesn't page anyone). See them at http://localhost:9090/alerts.
+groups:
+  - name: netsim
+    rules:
+      - alert: TargetDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: "Prometheus could not scrape {{ $labels.instance }} for over a minute."
+
+      - alert: RedisDown
+        # The exporter can be up while Redis itself isn't, so ask the exporter
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis is down: login rate limiting and caching are off"
+          description: "The app keeps working (fail open) but brute-force protection is disabled."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+            / sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "More than 5% of API requests fail with a 5xx error"
+
+      - alert: SlowRequests
+        expr: histogram_quantile(0.95, sum by (le) (rate(http_request_duration_highr_seconds_bucket[5m]))) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "95% of API requests take longer than 1s"
+
+      - alert: LoginBruteForce
+        expr: sum(increase(netsim_login_attempts_total{result="blocked"}[5m])) > 5
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Many blocked logins: someone may be guessing passwords"
+          description: "{{ $value | printf \"%.0f\" }} login attempts were rate limited in the last 5 minutes."
+
+      - alert: RedisErrors
+        expr: sum(increase(netsim_redis_errors_total[5m])) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The backend's Redis calls are failing and being skipped"

@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetSim Architecture</title>
+<style>
+  :root {
+    --bg: #ffffff; --panel: #f6f7f9; --line: #d9dde3; --ink: #1d2330; --dim: #5b6472;
+    --browser: #5b6472; --browser-bg: #eef0f3;
+    --front: #2f6fd6;   --front-bg: #e3efff;
+    --back: #1f8f4e;    --back-bg: #e2f6ea;
+    --pg: #33639b;      --pg-bg: #e6eefb;
+    --redis: #c0392b;   --redis-bg: #fdeaea;
+    --mon: #7d4cc4;     --mon-bg: #f1e9fb;
+    --graf: #d9731c;    --graf-bg: #fff1e3;
+    --you: #333a45;     --you-bg: #f3f4f6;
+    --band: #f1f3f6;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #12151b; --panel: #1a1e26; --line: #2c323d; --ink: #e6e9ef; --dim: #9aa3b2;
+      --browser: #aab2bf; --browser-bg: #222731;
+      --front: #6ea4ff;   --front-bg: #16243b;
+      --back: #4cc583;    --back-bg: #13281d;
+      --pg: #7fa8dd;      --pg-bg: #172234;
+      --redis: #ff7b6b;   --redis-bg: #351a18;
+      --mon: #b38cf2;     --mon-bg: #251b36;
+      --graf: #ffa45c;    --graf-bg: #33220f;
+      --you: #d4d8df;     --you-bg: #23272f;
+      --band: #1b1f27;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #12151b; --panel: #1a1e26; --line: #2c323d; --ink: #e6e9ef; --dim: #9aa3b2;
+    --browser: #aab2bf; --browser-bg: #222731;
+    --front: #6ea4ff;   --front-bg: #16243b;
+    --back: #4cc583;    --back-bg: #13281d;
+    --pg: #7fa8dd;      --pg-bg: #172234;
+    --redis: #ff7b6b;   --redis-bg: #351a18;
+    --mon: #b38cf2;     --mon-bg: #251b36;
+    --graf: #ffa45c;    --graf-bg: #33220f;
+    --you: #d4d8df;     --you-bg: #23272f;
+    --band: #1b1f27;
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em; }
+  code { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 16px 64px; }
+
+  header.top { padding: 40px 0 16px; }
+  header.top h1 { margin: 0 0 6px; font-size: 30px; letter-spacing: -0.01em; }
+  header.top p { margin: 0; color: var(--dim); }
+
+  nav.toc {
+    position: sticky; top: 0; z-index: 5; background: var(--bg);
+    border-bottom: 1px solid var(--line); margin: 0 -16px 8px; padding: 10px 16px;
+    display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  nav.toc a {
+    color: var(--ink); text-decoration: none; font-size: 14px;
+    padding: 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel);
+  }
+  nav.toc a:hover { border-color: var(--dim); }
+
+  section { padding-top: 28px; scroll-margin-top: 56px; }
+  section h2 { margin: 0 0 4px; font-size: 22px; }
+  section > p.sub { margin: 0 0 16px; color: var(--dim); }
+  h3 { font-size: 16px; margin: 20px 0 6px; }
+
+  figure { margin: 0 0 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); overflow-x: auto; }
+  figure svg { display: block; width: 100%; min-width: 720px; height: auto; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0 16px; }
+  th, td { text-align: left; vertical-align: top; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { background: var(--panel); font-weight: 600; }
+  .table-wrap { overflow-x: auto; }
+
+  .files { font-size: 14px; color: var(--dim); }
+  .files code { color: var(--ink); }
+  .note { border-left: 3px solid var(--line); padding: 4px 12px; margin: 12px 0; color: var(--ink); background: var(--panel); border-radius: 0 6px 6px 0; }
+
+  /* SVG text */
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  svg .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  svg .halo { paint-order: stroke; stroke: var(--bg); stroke-width: 5px; stroke-linejoin: round; }
+
+  .theme-btn {
+    float: right; margin-top: 4px; font: inherit; font-size: 13px; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <button class="theme-btn" id="themeBtn" type="button">Theme</button>
+  <h1>How NetSim fits together</h1>
+  <p>Frontend, backend, Redis (rate limiting and caching) and monitoring (Prometheus + Grafana), step by step.</p>
+</header>
+
+<nav class="toc">
+  <a href="#big-picture">1. Big picture</a>
+  <a href="#opening">2. Opening the app</a>
+  <a href="#login">3. Login + rate limit</a>
+  <a href="#caching">4. Caching</a>
+  <a href="#monitoring">5. Monitoring</a>
+  <a href="#cheatsheet">6. Cheat sheet</a>
+</nav>
+
+<!-- ============================================================ 1 -->
+<section id="big-picture">
+  <h2>1. The big picture</h2>
+  <p class="sub">Every box is one container from <code>docker-compose.yml</code>, except your browser and you.</p>
+
+  <figure>
+    <svg viewBox="0 0 860 470" role="img" aria-label="Architecture diagram: browser to nginx to backend, which uses Postgres and Redis; Prometheus scrapes the backend and exporters; Grafana queries Prometheus.">
+      <defs>
+        <marker id="a-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--ink)"/></marker>
+        <marker id="a-mon" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--mon)"/></marker>
+        <marker id="a-graf" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--graf)"/></marker>
+      </defs>
+
+      <!-- Docker network -->
+      <rect x="180" y="36" width="668" height="404" rx="12" style="fill:none;stroke:var(--dim)" stroke-dasharray="7 5"/>
+      <text x="194" y="56" font-size="12" font-weight="600" style="fill:var(--dim)">Docker network: containers find each other by service name, e.g. http://backend:8000</text>
+
+      <!-- app row -->
+      <g id="boxes"></g>
+
+      <!-- app arrows -->
+      <g style="stroke:var(--ink)" stroke-width="1.6" fill="none">
+        <line x1="150" y1="113" x2="200" y2="113" marker-start="url(#a-ink)" marker-end="url(#a-ink)"/>
+        <line x1="370" y1="113" x2="420" y2="113" marker-start="url(#a-ink)" marker-end="url(#a-ink)"/>
+        <line x1="590" y1="98" x2="660" y2="96" marker-start="url(#a-ink)" marker-end="url(#a-ink)"/>
+        <line x1="590" y1="132" x2="660" y2="176" marker-start="url(#a-ink)" marker-end="url(#a-ink)"/>
+      </g>
+      <g font-size="11" text-anchor="middle" style="fill:var(--ink)">
+        <text class="halo" x="175" y="106">HTTP</text>
+        <text class="halo" x="395" y="102">/api/*</text>
+        <text class="halo" x="625" y="89">SQL</text>
+        <text class="halo" x="604" y="196">GET SET INCR DEL</text>
+      </g>
+
+      <!-- monitoring arrows -->
+      <g style="stroke:var(--mon)" stroke-width="1.6" fill="none" stroke-dasharray="5 4">
+        <line x1="505" y1="330" x2="505" y2="148" marker-end="url(#a-mon)"/>
+        <line x1="590" y1="345" x2="660" y2="282" marker-end="url(#a-mon)"/>
+        <line x1="590" y1="372" x2="660" y2="366" marker-end="url(#a-mon)"/>
+        <line x1="745" y1="250" x2="745" y2="204" marker-end="url(#a-mon)"/>
+        <polyline points="830,366 840,366 840,96 832,96" marker-end="url(#a-mon)"/>
+      </g>
+      <g font-size="11" text-anchor="middle" style="fill:var(--mon)">
+        <text class="halo" x="505" y="244">GET /metrics every 15s</text>
+        <text class="halo" x="626" y="306">scrape</text>
+        <text class="halo" x="626" y="362">scrape</text>
+        <text class="halo" x="745" y="231">reads stats</text>
+        <text class="halo" transform="translate(836 230) rotate(90)">reads stats</text>
+      </g>
+      <g style="stroke:var(--graf)" stroke-width="1.6" fill="none">
+        <line x1="370" y1="363" x2="418" y2="363" marker-end="url(#a-graf)"/>
+      </g>
+      <text class="halo" x="395" y="352" font-size="11" text-anchor="middle" style="fill:var(--graf)">PromQL</text>
+      <g style="stroke:var(--ink)" stroke-width="1.6" fill="none">
+        <line x1="150" y1="363" x2="198" y2="363" marker-end="url(#a-ink)"/>
+      </g>
+      <text class="halo" x="175" y="352" font-size="11" text-anchor="middle" style="fill:var(--ink)">views</text>
+
+      <!-- legend -->
+      <line x1="20" y1="458" x2="52" y2="458" style="stroke:var(--ink)" stroke-width="1.6"/>
+      <text x="58" y="462" font-size="12" style="fill:var(--ink)">the app: a request and its answer</text>
+      <line x1="290" y1="458" x2="322" y2="458" style="stroke:var(--mon)" stroke-width="1.6" stroke-dasharray="5 4"/>
+      <text x="328" y="462" font-size="12" style="fill:var(--ink)">monitoring: Prometheus pulls numbers, nothing is pushed</text>
+    </svg>
+  </figure>
+
+  <p><strong>Top half = the app. Bottom half = watching the app.</strong> The app never talks to Prometheus or Grafana: Prometheus comes to it every 15 seconds and reads <code>/metrics</code>.</p>
+  <ul>
+    <li><strong>frontend (nginx)</strong> serves the built Vue files and forwards only <code>/api/*</code> to the backend.</li>
+    <li><strong>backend (FastAPI)</strong> is the API. It reads and writes users and progress in <strong>Postgres</strong>, and uses <strong>Redis</strong> for login counters and cached copies.</li>
+    <li><strong>Exporters</strong> translate Redis and Postgres stats into the same text format as <code>/metrics</code>.</li>
+    <li><strong>Prometheus</strong> stores the numbers for 7 days and checks the alert rules. <strong>Grafana</strong> asks it questions in PromQL and draws the answers.</li>
+  </ul>
+</section>
+
+<!-- ============================================================ 2 -->
+<section id="opening">
+  <h2>2. Opening the app: frontend and backend</h2>
+  <p class="sub">What happens when you type <code>localhost:8090</code> and the Missions page loads.</p>
+  <figure><svg data-seq="opening" role="img" aria-label="Sequence diagram: loading the page and calling the API"></svg></figure>
+
+  <p><strong>Why nginx in front?</strong> In production there's no Vite dev server. <code>npm run build</code> turns the Vue code into plain files in <code>dist/</code>, and nginx serves them very fast. nginx also forwards <code>/api/*</code> to the backend, so the browser and the API share one address, which avoids CORS problems. Anything that isn't a file, like <code>/missions</code>, gets <code>index.html</code> back (<code>try_files</code>), and Vue picks the page.</p>
+  <div class="note">nginx looks up the name <code>backend</code> again every 10 seconds (<code>resolver 127.0.0.11</code>). Without that, recreating the backend container gives it a new IP and every API call fails with 502.</div>
+  <p class="files"><strong>Files:</strong> <code>frontend/nginx.conf</code> (routing, cache headers, real IP) · <code>frontend/src/lib/api.ts</code> (<code>baseURL: '/api'</code>) · <code>backend/app/main.py</code> (routers) · <code>backend/app/security.py</code> (JWT check)</p>
+</section>
+
+<!-- ============================================================ 3 -->
+<section id="login">
+  <h2>3. Logging in, protected by Redis (rate limiting)</h2>
+  <p class="sub">A wrong password. Redis counts failures per IP + username, and the 6th try within 15 minutes is refused.</p>
+  <figure><svg data-seq="login" role="img" aria-label="Sequence diagram: login with a wrong password and the Redis counter"></svg></figure>
+
+  <div class="table-wrap"><table>
+    <tr><th>Attempt</th><th>Redis counter</th><th>Answer</th><th>Why</th></tr>
+    <tr><td>1 to 5 (wrong)</td><td>1 … 5, expires 15 min after the first</td><td>401</td><td>counted with <code>INCR</code>; <code>EXPIRE … NX</code> starts the 15-minute timer only once</td></tr>
+    <tr><td>6+ (any password)</td><td>5</td><td>429 Too Many Requests</td><td>checked <em>before</em> the password, so even the right one is refused</td></tr>
+    <tr><td>correct password</td><td>deleted (<code>DEL</code>)</td><td>200 + JWT token</td><td>a successful login resets the count</td></tr>
+    <tr><td>Redis down</td><td>–</td><td>login still works</td><td>fail open: logged, and counted in <code>netsim_redis_errors_total</code></td></tr>
+  </table></div>
+  <p class="files"><strong>Files:</strong> <code>backend/app/routers/auth.py</code> (login flow) · <code>backend/app/ratelimit.py</code> (the counter) · <code>backend/app/redis_client.py</code> (one shared connection, from <code>REDIS_URL</code>)<br>
+  <strong>Watch it live:</strong> <code>docker compose exec redis redis-cli --scan --pattern 'login:fail:*'</code></p>
+</section>
+
+<!-- ============================================================ 4 -->
+<section id="caching">
+  <h2>4. Caching /api/progress in Redis (cache-aside)</h2>
+  <p class="sub">Redis sits <strong>beside</strong> Postgres, not in front of it. The backend code decides: ask Redis first, and Postgres only on a miss.</p>
+  <figure><svg data-seq="caching" role="img" aria-label="Sequence diagram: cache miss, cache hit, and invalidation"></svg></figure>
+
+  <ul>
+    <li><strong>The key contains the user id</strong> (<code>cache:progress:user:132</code>), so users never see each other's data.</li>
+    <li><strong>The 10-minute expiry</strong> (<code>EX 600</code>) is a safety net in case an invalidation is ever missed.</li>
+    <li><strong><code>DEL</code> comes after <code>COMMIT</code></strong>; the other way round, another request could re-cache the old rows.</li>
+    <li><strong>Postgres is the source of truth.</strong> Wiping Redis loses nothing; the next reads are just misses.</li>
+  </ul>
+  <p class="files"><strong>Files:</strong> <code>backend/app/routers/missions.py</code> (<code>list_progress</code>, <code>complete_mission</code>) · <code>backend/app/cache.py</code> (<code>cache_get</code> / <code>cache_set</code> / <code>cache_delete</code>)<br>
+  <strong>See it:</strong> DevTools → Network → click <code>progress</code> → Response Headers → <code>x-cache</code></p>
+</section>
+
+<!-- ============================================================ 5 -->
+<section id="monitoring">
+  <h2>5. Monitoring: Prometheus collects, Grafana draws</h2>
+  <p class="sub">Two separate jobs: scraping <strong>writes</strong> numbers on a timer, and PromQL <strong>reads</strong> them when asked.</p>
+  <figure><svg data-seq="monitoring" role="img" aria-label="Sequence diagram: counting, scraping, alerting and dashboards"></svg></figure>
+
+  <div class="table-wrap"><table>
+    <tr><th>Piece</th><th>Job</th><th>Config</th></tr>
+    <tr><td>backend <code>/metrics</code></td><td>publishes the current totals as text (no history)</td><td><code>backend/app/metrics.py</code>, <code>main.py</code> (Instrumentator)</td></tr>
+    <tr><td>exporters</td><td>translate Redis / Postgres stats into the same text format</td><td><code>docker-compose.yml</code></td></tr>
+    <tr><td>Prometheus</td><td>scrapes every 15s, stores numbers for 7 days, checks alert rules</td><td><code>monitoring/prometheus/prometheus.yml</code>, <code>alerts.yml</code></td></tr>
+    <tr><td>Grafana</td><td>stores no data: asks Prometheus in PromQL and draws the answer</td><td><code>monitoring/grafana/</code> (data source, <code>netsim.json</code>)</td></tr>
+  </table></div>
+  <p><strong><code>rate()</code></strong> turns an ever-growing total into "how fast right now". <strong>Labels</strong> like <code>result</code> split one counter into several series; keep their values a small, fixed set (never usernames or IPs). <code>/metrics</code> isn't reachable through nginx, which only forwards <code>/api/</code>: only containers inside the Docker network can read it.</p>
+</section>
+
+<!-- ============================================================ 6 -->
+<section id="cheatsheet">
+  <h2>6. Cheat sheet</h2>
+  <p class="sub">Every service, how to reach it, and where to look when something's wrong.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Service</th><th>From your Mac</th><th>Inside Docker</th><th>Keeps data?</th><th>Role</th></tr>
+    <tr><td>frontend (nginx)</td><td><code>http://localhost:8090</code></td><td><code>frontend:80</code></td><td>no</td><td>Vue app + forwards <code>/api/*</code></td></tr>
+    <tr><td>backend (FastAPI)</td><td><code>http://localhost:8011/docs</code></td><td><code>backend:8000</code></td><td>no</td><td>API, rate limit, cache, <code>/metrics</code></td></tr>
+    <tr><td>db (Postgres)</td><td><code>localhost:5435</code> (DBeaver, psql)</td><td><code>db:5432</code></td><td>yes, volume <code>pgdata</code></td><td>source of truth</td></tr>
+    <tr><td>redis</td><td><code>docker compose exec redis redis-cli</code></td><td><code>redis:6379</code></td><td>no (by design)</td><td>login counters, cache copies</td></tr>
+    <tr><td>prometheus</td><td><code>http://localhost:9090</code></td><td><code>prometheus:9090</code></td><td>yes, <code>promdata</code> (7 days)</td><td>scrape, store, alert</td></tr>
+    <tr><td>grafana</td><td><code>http://localhost:3000</code> (admin)</td><td><code>grafana:3000</code></td><td>yes, <code>grafanadata</code></td><td>dashboards</td></tr>
+    <tr><td>redis-exporter / postgres-exporter</td><td>–</td><td><code>:9121</code> / <code>:9187</code></td><td>no</td><td>stats for Prometheus</td></tr>
+  </table></div>
+
+  <h3>Something's wrong?</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Symptom</th><th>Where to look</th></tr>
+    <tr><td>Page loads, but every API call gives 502</td><td><code>docker compose logs backend</code> (is it running? did it crash at startup?)</td></tr>
+    <tr><td>Login always says 429</td><td><code>redis-cli --scan --pattern 'login:fail:*'</code>, then <code>DEL</code> the key, or wait 15 minutes</td></tr>
+    <tr><td>Data looks old</td><td><code>x-cache: HIT</code> in DevTools? <code>redis-cli DEL cache:progress:user:&lt;id&gt;</code></td></tr>
+    <tr><td>A Grafana panel says "No data"</td><td>Prometheus → Status → Targets: is the target up? <code>rate()</code> needs 2 scrapes (~30s)</td></tr>
+    <tr><td>An alert fired</td><td><code>http://localhost:9090/alerts</code>, then the matching Grafana panel</td></tr>
+    <tr><td>Changed <code>prometheus.yml</code> / <code>alerts.yml</code></td><td><code>curl -X POST localhost:9090/-/reload</code></td></tr>
+    <tr><td>Changed the dashboard</td><td><code>python3 monitoring/grafana/build_dashboard.py</code>, then <code>docker compose restart grafana</code></td></tr>
+  </table></div>
+
+  <div class="note"><strong>One request, end to end:</strong> browser → nginx (:8090) → backend (:8000) → Redis first (rate limit / cache) → Postgres if needed → the answer travels back the same way. Meanwhile Prometheus scrapes the backend and exporters every 15s, and Grafana graphs the numbers.</div>
+</section>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------- theme toggle
+(function () {
+  const root = document.documentElement, btn = document.getElementById('themeBtn');
+  let saved = null;
+  try { saved = localStorage.getItem('netsim-arch-theme'); } catch (e) {}
+  if (saved) root.dataset.theme = saved;
+  btn.addEventListener('click', () => {
+    const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = dark ? 'light' : 'dark';
+    try { localStorage.setItem('netsim-arch-theme', root.dataset.theme); } catch (e) {}
+  });
+})();
+
+// ---------------------------------------------------------------- boxes on the big picture
+(function () {
+  const g = document.getElementById('boxes');
+  const boxes = [
+    [20, 80, 130, 66, 'browser', 'Your browser', ['localhost:8090']],
+    [200, 80, 170, 66, 'front', 'frontend (nginx)', ['serves the Vue app', 'forwards /api/* only']],
+    [420, 80, 170, 66, 'back', 'backend (FastAPI)', ['the API · port 8000', '/metrics for Prometheus']],
+    [660, 70, 170, 52, 'pg', 'db (Postgres)', ['source of truth']],
+    [660, 150, 170, 52, 'redis', 'redis', ['login counters + cache']],
+    [20, 330, 130, 66, 'you', 'You', ['localhost:3000']],
+    [200, 330, 170, 66, 'graf', 'grafana', ['draws dashboards', 'netsim.json']],
+    [420, 330, 170, 66, 'mon', 'prometheus', ['scrapes + stores numbers', 'checks alert rules']],
+    [660, 250, 170, 46, 'mon', 'redis-exporter', ['Redis stats as /metrics']],
+    [660, 340, 170, 46, 'mon', 'postgres-exporter', ['Postgres stats as /metrics']],
+  ];
+  g.innerHTML = boxes.map(([x, y, w, h, k, title, lines]) =>
+    `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" style="fill:var(--${k}-bg);stroke:var(--${k})" stroke-width="1.6"/>` +
+    `<text x="${x + w / 2}" y="${y + 20}" font-size="13.5" font-weight="600" text-anchor="middle" style="fill:var(--${k})">${title}</text>` +
+    lines.map((l, i) => `<text x="${x + w / 2}" y="${y + 36 + i * 14}" font-size="11" text-anchor="middle" style="fill:var(--ink)">${l}</text>`).join('')
+  ).join('');
+})();
+
+// ---------------------------------------------------------------- sequence diagrams
+const SEQ = {
+  opening: {
+    parts: [['br', 'Browser', 'browser'], ['ng', 'nginx (frontend)', 'front'], ['be', 'backend', 'back']],
+    msgs: [
+      ['section', 'A. The page itself: nginx answers alone, the backend is not involved'],
+      ['msg', 'br', 'ng', 'GET /'],
+      ['ret', 'ng', 'br', 'index.html  (Cache-Control: no-cache)'],
+      ['msg', 'br', 'ng', 'GET /assets/index-3f9a.js'],
+      ['ret', 'ng', 'br', 'JavaScript  (cached 1 year: hashed name)'],
+      ['self', 'br', 'Vue starts; vue-router shows /missions'],
+      ['section', 'B. Data: only paths starting with /api/ go to the backend'],
+      ['msg', 'br', 'ng', 'GET /api/missions'],
+      ['msg', 'ng', 'be', 'GET /api/missions  + X-Forwarded-For'],
+      ['self', 'be', 'missions are a Python list in memory'],
+      ['ret', 'be', 'ng', '200 JSON'],
+      ['ret', 'ng', 'br', '200 JSON'],
+      ['msg', 'br', 'ng', 'GET /api/progress  + Bearer <JWT>'],
+      ['msg', 'ng', 'be', 'forwards it'],
+      ['self', 'be', 'checks the JWT → user 132 (see 4. Caching)'],
+    ],
+  },
+  login: {
+    parts: [['br', 'Browser', 'browser'], ['ng', 'nginx', 'front'], ['be', 'backend', 'back'], ['rd', 'Redis', 'redis'], ['pg', 'Postgres', 'pg']],
+    msgs: [
+      ['msg', 'br', 'ng', 'POST /api/auth/login {neo, pw}'],
+      ['msg', 'ng', 'be', '+ X-Forwarded-For: real IP'],
+      ['msg', 'be', 'rd', 'GET login:fail:<ip>:neo'],
+      ['ret', 'rd', 'be', '2  (under 5: allowed)'],
+      ['self', 'be', 'if 5 or more: stop here → 429 + Retry-After'],
+      ['msg', 'be', 'pg', 'SELECT user WHERE username=neo'],
+      ['ret', 'pg', 'be', 'user row (password hash)'],
+      ['self', 'be', 'bcrypt: the password is wrong'],
+      ['msg', 'be', 'rd', 'MULTI INCR + EXPIRE 900 NX EXEC'],
+      ['ret', 'rd', 'be', '3'],
+      ['self', 'be', 'LOGIN_ATTEMPTS{result=failure} +1  (see 5.)'],
+      ['ret', 'be', 'br', '401 Invalid username or password  (via nginx)'],
+    ],
+  },
+  caching: {
+    parts: [['br', 'Browser', 'browser'], ['be', 'backend', 'back'], ['rd', 'Redis', 'redis'], ['pg', 'Postgres', 'pg']],
+    msgs: [
+      ['section', 'MISS: the first read (or the first after an invalidation)'],
+      ['msg', 'br', 'be', 'GET /api/progress'],
+      ['msg', 'be', 'rd', 'GET cache:progress:user:132'],
+      ['ret', 'rd', 'be', '(nil): not cached'],
+      ['msg', 'be', 'pg', 'SELECT … FROM progress WHERE user_id=132'],
+      ['ret', 'pg', 'be', 'rows'],
+      ['msg', 'be', 'rd', 'SET cache:progress:user:132 [...] EX 600'],
+      ['ret', 'be', 'br', '200 JSON   X-Cache: MISS'],
+      ['section', 'HIT: the next reads, within 10 minutes'],
+      ['msg', 'br', 'be', 'GET /api/progress'],
+      ['msg', 'be', 'rd', 'GET cache:progress:user:132'],
+      ['ret', 'rd', 'be', '[...]  Postgres not touched'],
+      ['ret', 'be', 'br', '200 JSON   X-Cache: HIT'],
+      ['section', 'INVALIDATE: the data changed, so the copy is thrown away'],
+      ['msg', 'br', 'be', 'POST /api/missions/…/complete'],
+      ['msg', 'be', 'pg', 'UPDATE progress … COMMIT'],
+      ['msg', 'be', 'rd', 'DEL cache:progress:user:132'],
+      ['self', 'be', 'the next GET is a MISS again, with fresh data'],
+    ],
+  },
+  monitoring: {
+    parts: [['be', 'backend', 'back'], ['pr', 'Prometheus', 'mon'], ['gf', 'Grafana', 'graf'], ['you', 'You', 'you']],
+    msgs: [
+      ['section', 'In the app: counting (no network involved)'],
+      ['self', 'be', 'wrong password → LOGIN_ATTEMPTS.labels(result="failure").inc()'],
+      ['section', 'Scraping: every 15s (prometheus.yml), also redis-exporter and postgres-exporter'],
+      ['msg', 'pr', 'be', 'GET http://backend:8000/metrics'],
+      ['ret', 'be', 'pr', 'netsim_login_attempts_total{result="failure"} 5'],
+      ['self', 'pr', 'stores (time, 5) for 7 days'],
+      ['section', 'Alerts: every 15s (alerts.yml), even when nobody is looking'],
+      ['self', 'pr', 'increase(…{result="blocked"}[5m]) > 5 for 1m → FIRING'],
+      ['section', 'Dashboards: every 10s per panel (netsim.json)'],
+      ['msg', 'you', 'gf', 'open localhost:3000'],
+      ['msg', 'gf', 'pr', 'sum by (result) (rate(netsim_login_attempts_total[1m])) * 60'],
+      ['ret', 'pr', 'gf', 'failure=6.7  blocked=13.3  success=1.2'],
+      ['ret', 'gf', 'you', 'line chart: "Login attempts / minute"'],
+    ],
+  },
+};
+
+function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+function renderSeq(svg, { parts, msgs }) {
+  const W = 860, X0 = 10, X1 = 850, HEAD = 36, TOP = 6;
+  const colW = (X1 - X0) / parts.length;
+  const xs = {};
+  parts.forEach(([k], i) => (xs[k] = X0 + colW * (i + 0.5)));
+  const rowH = (m) => (m[0] === 'section' ? 28 : 30);
+  const H = TOP + HEAD + 20 + msgs.reduce((s, m) => s + rowH(m), 0) + 6;
+  const charW = 6.4; // monospace 10.5px, approx
+
+  let out = `<defs>
+    <marker id="s-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--ink)"/></marker>
+    <marker id="s-dim" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--dim)"/></marker>
+  </defs>`;
+
+  // participant heads + lifelines
+  parts.forEach(([k, title, kind]) => {
+    const cx = xs[k], bw = Math.min(colW - 16, 170);
+    out += `<line x1="${cx}" y1="${TOP + HEAD}" x2="${cx}" y2="${H - 4}" style="stroke:var(--${kind})" stroke-width="1" stroke-dasharray="3 4"/>`;
+    out += `<rect x="${cx - bw / 2}" y="${TOP}" width="${bw}" height="${HEAD}" rx="7" style="fill:var(--${kind}-bg);stroke:var(--${kind})" stroke-width="1.5"/>`;
+    out += `<text x="${cx}" y="${TOP + 23}" font-size="13" font-weight="600" text-anchor="middle" style="fill:var(--${kind})">${esc(title)}</text>`;
+  });
+
+  let y = TOP + HEAD + 20, n = 0;
+  const badge = (x, y, num) =>
+    `<circle cx="${x}" cy="${y}" r="9" style="fill:var(--ink)"/><text x="${x}" y="${y + 3.6}" font-size="10" font-weight="700" text-anchor="middle" style="fill:var(--bg)">${num}</text>`;
+
+  for (const m of msgs) {
+    if (m[0] === 'section') {
+      out += `<rect x="${X0}" y="${y - 10}" width="${X1 - X0}" height="20" rx="4" style="fill:var(--band)"/>`;
+      out += `<text x="${X0 + 8}" y="${y + 4}" font-size="11.5" font-weight="600" style="fill:var(--dim)">${esc(m[1])}</text>`;
+      y += rowH(m);
+      continue;
+    }
+    n++;
+    if (m[0] === 'self') {
+      const cx = xs[m[1]];
+      out += badge(cx - 16, y, n);
+      // Note to the right of the lifeline, or to the left of the badge if it would run off the edge
+      const right = cx + 8 + m[2].length * 6.2 <= X1;
+      out += `<text class="halo" x="${right ? cx + 8 : cx - 32}" y="${y + 4}" font-size="12" font-style="italic" text-anchor="${right ? 'start' : 'end'}" style="fill:var(--ink)">${esc(m[2])}</text>`;
+    } else {
+      const ret = m[0] === 'ret';
+      const xa = xs[m[1]], xb = xs[m[2]], color = ret ? 'dim' : 'ink';
+      const dir = xb > xa ? 1 : -1;
+      out += `<line x1="${xa}" y1="${y}" x2="${xb - dir * 1}" y2="${y}" style="stroke:var(--${color})" stroke-width="1.5" ${ret ? 'stroke-dasharray="5 4"' : ''} marker-end="url(#s-${color})"/>`;
+      out += badge(xa - dir * 16, y, n);
+      // Label: centred if it fits between the lifelines, otherwise it starts at the sender
+      const tw = m[3].length * charW, span = Math.abs(xb - xa);
+      let anchor = 'middle', lx = (xa + xb) / 2;
+      if (tw > span - 24) { anchor = dir > 0 ? 'start' : 'end'; lx = xa + dir * 10; }
+      out += `<text class="mono halo" x="${lx}" y="${y - 6}" font-size="10.5" text-anchor="${anchor}" style="fill:var(--${color})">${esc(m[3])}</text>`;
+    }
+    y += rowH(m);
+  }
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = out;
+}
+
+document.querySelectorAll('svg[data-seq]').forEach((svg) => renderSeq(svg, SEQ[svg.dataset.seq]));
+</script>
+</body>
+</html>
