@@ -28,7 +28,7 @@ jobs:
       run:
         working-directory: backend
 
-    # Throwaway Postgres for the migration check and the tests. Same version as docker-compose.yml.
+    # Throwaway Postgres and Redis for the migration check and the tests. Same versions as docker-compose.yml.
     # The job runs directly on the runner VM, so it reaches this container via localhost + the mapped port.
     services:
       postgres:
@@ -43,6 +43,15 @@ jobs:
           --health-cmd "pg_isready -U test"
           --health-interval 5s
           --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
           --health-retries 10
 
     steps:
@@ -70,10 +79,11 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/test
         run: uv run --frozen alembic upgrade head
 
-      - name: Run pytest on Postgres
+      - name: Run pytest on Postgres and Redis
         env:
-          # Read by tests/conftest.py; without it the tests use in-memory SQLite
+          # Read by tests/conftest.py; without them the tests use in-memory SQLite and fakeredis
           TEST_DATABASE_URL: postgresql+asyncpg://test:test@localhost:5432/test
+          TEST_REDIS_URL: redis://localhost:6379/0
         # -rxs: list skipped and xfailed tests at the end
         run: uv run --frozen pytest -rxs
 
@@ -103,6 +113,26 @@ jobs:
       # vue-tsc -b runs first, so type errors fail here
       - name: Typecheck and build
         run: npm run build
+
+  monitoring-config:
+    name: Monitoring config
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+
+      # promtool ships in the Prometheus image: checks prometheus.yml and the alert rules it loads.
+      # Same version as docker-compose.yml, mounted where the config expects its rule file.
+      - name: Validate Prometheus config and alert rules
+        run: >
+          docker run --rm
+          --mount "type=bind,src=$PWD/monitoring/prometheus,dst=/etc/prometheus,readonly"
+          --entrypoint promtool prom/prometheus:v3.5.0
+          check config /etc/prometheus/prometheus.yml
+
+      # Grafana silently skips a dashboard file it can't parse
+      - name: Validate Grafana dashboard JSON
+        run: python3 -m json.tool monitoring/grafana/dashboards/netsim.json > /dev/null
 
   images:
     name: Image (${{ matrix.service }})

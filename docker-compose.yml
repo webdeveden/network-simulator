@@ -18,18 +18,36 @@ services:
       timeout: 5s
       retries: 10
 
+  # Short-lived data: failed-login counters and cached API responses. No volume and no published
+  # port: losing it on restart is fine (Postgres is the source of truth), and only the backend
+  # needs it. Inspect with: docker compose exec redis redis-cli
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-netsim}:${POSTGRES_PASSWORD:-netsim}@db:5432/${POSTGRES_DB:-netsim}
       NETSIM_SECRET_KEY: ${NETSIM_SECRET_KEY:?set NETSIM_SECRET_KEY in .env}
       ALLOWED_ORIGINS: "http://localhost:8090"
+      REDIS_URL: redis://redis:6379/0
+      # Trust X-Forwarded-For so the backend sees the browser's IP, not nginx's (rate limiting needs it).
+      # Safe only because nginx is the sole way in from outside: the port below is this Mac only.
+      FORWARDED_ALLOW_IPS: "*"
     ports:
-      - "8011:8000"
+      - "127.0.0.1:8011:8000"
     command: >
       sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
 
@@ -41,5 +59,79 @@ services:
     ports:
       - "8090:80"
 
+  # ---- Monitoring: Prometheus collects numbers, Grafana graphs them (config in ./monitoring) ----
+
+  # Scrapes /metrics from the backend and the exporters every 15s. UI: http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d   # keep a week of history
+      - --web.enable-lifecycle             # lets `curl -X POST localhost:9090/-/reload` re-read the config
+    # Long syntax for bind mounts: the short "src:dst:ro" form splits on ":", which breaks on
+    # this repo's parent folder name ("networking :cybersecurity"). create_host_path: false makes
+    # compose use Docker's mount API (no colon splitting) and fail loudly if the folder is missing.
+    volumes:
+      - type: bind
+        source: ./monitoring/prometheus
+        target: /etc/prometheus
+        read_only: true
+        bind:
+          create_host_path: false
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+
+  # Exporters: small programs that read Redis / Postgres stats and serve them as /metrics.
+  # No published ports: only Prometheus, inside the Docker network, needs them.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.74.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      - redis
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-netsim}:${POSTGRES_PASSWORD:-netsim}@db:5432/${POSTGRES_DB:-netsim}?sslmode=disable
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Dashboards. UI: http://localhost:3000 (user admin). Data source and the NetSim dashboard
+  # are loaded from ./monitoring/grafana on startup, so nothing needs clicking together.
+  grafana:
+    image: grafana/grafana:12.1.0
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/netsim.json
+    volumes:
+      - type: bind
+        source: ./monitoring/grafana/provisioning
+        target: /etc/grafana/provisioning
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./monitoring/grafana/dashboards
+        target: /etc/grafana/dashboards
+        read_only: true
+        bind:
+          create_host_path: false
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "127.0.0.1:3000:3000"
+
 volumes:
   pgdata:
+  promdata:
+  grafanadata:

@@ -1,0 +1,28 @@
+# Prometheus pulls ("scrapes") GET /metrics from every target below on a timer and stores
+# the numbers as time series. Targets are compose service names on the Docker network.
+global:
+  scrape_interval: 15s      # how often to scrape each target
+  evaluation_interval: 15s  # how often to check the alert rules
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # The NetSim API: HTTP request metrics plus netsim_* counters (backend/app/metrics.py)
+  - job_name: backend
+    static_configs:
+      - targets: ["backend:8000"]
+
+  # Exporters translate Redis and Postgres internals into Prometheus metrics
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  # Prometheus watching itself
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

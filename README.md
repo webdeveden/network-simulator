@@ -154,7 +154,7 @@ cd backend
 uv sync                                 # creates .venv from uv.lock (incl. dev tools)
 uv run alembic upgrade head             # creates ./netsim.db (SQLite)
 uv run uvicorn app.main:app --reload --port 8010
-uv run pytest                           # backend tests (in-memory SQLite)
+uv run pytest                           # backend tests (in-memory SQLite, fakeredis)
 # same tests on Postgres, like CI. Use a separate DB: the tests drop every table when they finish.
 docker compose up -d db && docker compose exec db createdb -U netsim netsim_test   # once
 TEST_DATABASE_URL=postgresql+asyncpg://netsim:netsim@localhost:5435/netsim_test uv run pytest
@@ -173,13 +173,53 @@ cp .env.example .env   # then set NETSIM_SECRET_KEY
 docker compose up --build
 ```
 
-Open http://localhost:8090 for the app. The API is also exposed directly at http://localhost:8011.
+Open http://localhost:8090 for the app. The API is also exposed directly at http://localhost:8011 (this Mac only).
+
+### Login rate limiting (Redis)
+
+After 5 failed logins for the same username from the same IP, `/api/auth/login` returns
+**429 Too Many Requests** for 15 minutes (`Retry-After` says how long). A correct login resets the count.
+The counters live in the `redis` service (see [backend/app/ratelimit.py](backend/app/ratelimit.py)).
+Without `REDIS_URL` (plain `uv run uvicorn`) there is no limit, and if Redis goes down, logins still work.
+
+```bash
+docker compose exec redis redis-cli --scan --pattern 'login:fail:*'   # who is being counted
+docker compose exec redis redis-cli TTL login:fail:<ip>:<username>      # seconds until unblocked
+docker compose exec redis redis-cli DEL login:fail:<ip>:<username>      # unblock now
+```
+
+### Caching (Redis)
+
+`GET /api/progress` is cached per user for 10 minutes under `cache:progress:user:<id>`
+(see [backend/app/cache.py](backend/app/cache.py)). Completing a mission deletes that key, so the next
+read comes fresh from Postgres. The `X-Cache: HIT` / `MISS` response header (browser Network tab, or
+`curl -i`) shows which one answered. With Redis down, it reads the database every time.
+
+### Monitoring (Prometheus + Grafana)
+
+`docker compose up` also starts the monitoring stack (config in [monitoring/](monitoring/)):
+
+| | URL | What |
+|---|---|---|
+| Grafana | http://localhost:3000 (user `admin`, password `GRAFANA_ADMIN_PASSWORD` or `admin`) | The **NetSim** dashboard: traffic, errors, latency, login attacks, cache hit ratio, Redis, Postgres |
+| Prometheus | http://localhost:9090 | Raw metrics (Graph tab), scrape targets (Status → Targets), alerts (Alerts tab) |
+
+The backend serves its numbers at `GET /metrics` (inside the Docker network only; nginx doesn't forward it).
+Custom counters are in [backend/app/metrics.py](backend/app/metrics.py). Redis and Postgres are measured by
+`redis-exporter` and `postgres-exporter`. Alert rules are in
+[monitoring/prometheus/alerts.yml](monitoring/prometheus/alerts.yml); try the brute-force one by entering a wrong
+password about a dozen times, then watch it go pending → firing in Prometheus' Alerts tab.
+
+After editing `prometheus.yml` or `alerts.yml`: `curl -X POST localhost:9090/-/reload`.
+After editing the dashboard JSON: `docker compose restart grafana`. The JSON can be edited in Grafana and
+exported over the file, or regenerated with `python3 monitoring/grafana/build_dashboard.py` (one `panel()`
+call per panel: title, PromQL query, position).
 
 ## Tests
 
 ```bash
 cd frontend && npm test              # engine: routing, ARP, firewall, TTL loops, objectives
-cd backend && .venv/bin/pytest       # auth, topology CRUD/ownership, progress
+cd backend && uv run pytest          # auth, topology CRUD/ownership, progress, login rate limit
 ```
 
 ## Adding a mission

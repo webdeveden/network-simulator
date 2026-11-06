@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     # Read from NETSIM_SECRET_KEY so another project's SECRET_KEY in the shell can't leak in.
     SECRET_KEY: str = Field(min_length=32, validation_alias="NETSIM_SECRET_KEY")
     TOKEN_TTL_DAYS: int = 7
+    # Counts failed logins. Unset means no rate limiting (e.g. plain `uv run uvicorn` without Redis).
+    REDIS_URL: str | None = None
 
 
 settings = Settings()
