@@ -1,0 +1,30 @@
+# Runs the database migrations once, then stops. Compose runs them in the backend's start command,
+# but here that would mean 2 pods migrating at the same moment. A Job does it exactly once.
+# Job specs can't be changed once created, so delete the finished Job before applying a new image:
+#   kubectl -n netsim delete job migrate --ignore-not-found
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: netsim
+spec:
+  backoffLimit: 6                 # retries, e.g. while Postgres is still starting
+  ttlSecondsAfterFinished: 3600   # clean up an hour after finishing
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          # Built on this Mac and loaded with `kind load docker-image`: the published images are
+          # amd64 only until CI's multi-arch build reaches main. Then use
+          # ghcr.io/webdeveden/netsim-backend:sha-<commit> and remove imagePullPolicy.
+          image: netsim-backend:local
+          imagePullPolicy: Never
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: netsim-secrets, key: DATABASE_URL }
+            - name: NETSIM_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: netsim-secrets, key: NETSIM_SECRET_KEY }

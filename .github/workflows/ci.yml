@@ -156,6 +156,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Emulates ARM, so published images also run on Apple Silicon (the local kind cluster)
+      # and AWS Graviton. Only for publishing: PRs stay amd64-only, which is much faster.
+      - uses: docker/setup-qemu-action@v4
+        if: env.PUBLISH == 'true'
+
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
@@ -181,6 +186,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: ./${{ matrix.service }}
+          platforms: ${{ env.PUBLISH == 'true' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
           push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

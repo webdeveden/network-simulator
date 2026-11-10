@@ -1,0 +1,49 @@
+# Non-secret settings, the Kubernetes version of the `environment:` block in docker-compose.yml.
+# Passwords and keys are NOT here: they live in the Secret "netsim-secrets" (see k8s/README.md),
+# which is created by a command and never committed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netsim-config
+  namespace: netsim
+data:
+  ALLOWED_ORIGINS: "http://localhost:8091"
+  REDIS_URL: "redis://redis:6379/0"
+  # Trust X-Forwarded-For only from pods, so the backend sees the browser's IP, not nginx's.
+  # 10.244.0.0/16 is kind's pod network. Narrower than compose's "*".
+  FORWARDED_ALLOW_IPS: "10.244.0.0/16"
+---
+# nginx config for Kubernetes, mounted over the one baked into the frontend image. It differs from
+# frontend/nginx.conf in one way: that file asks Docker's DNS (127.0.0.11), which doesn't exist here.
+# It isn't needed either: a Service keeps one stable IP however often its pods are replaced, so a
+# plain proxy_pass can't go stale the way it did with compose.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-nginx
+  namespace: netsim
+data:
+  default.conf: |
+    server {
+        listen 80;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        location /api/ {
+            proxy_pass http://backend:8000;
+            proxy_set_header Host $host;
+            # Overwrite, don't append: a client could send its own X-Forwarded-For to fake its IP
+            proxy_set_header X-Forwarded-For $remote_addr;
+        }
+
+        # Built files have content hashes in their names: cache them for good.
+        location /assets/ {
+            add_header Cache-Control "public, max-age=31536000, immutable";
+        }
+
+        # The page itself must always be fresh, or browsers keep loading an old build.
+        location / {
+            add_header Cache-Control "no-cache";
+            try_files $uri $uri/ /index.html;
+        }
+    }

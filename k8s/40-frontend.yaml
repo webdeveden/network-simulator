@@ -1,0 +1,58 @@
+# nginx serving the Vue app and forwarding /api/* to the backend Service.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: netsim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          # Built on this Mac and loaded with `kind load docker-image`: the published images are
+          # amd64 only until CI's multi-arch build reaches main. Then use
+          # ghcr.io/webdeveden/netsim-frontend:sha-<commit> and remove imagePullPolicy.
+          image: netsim-frontend:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+          # Replaces the nginx config baked into the image (see frontend-nginx in 10-config.yaml)
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+          readinessProbe:
+            httpGet: { path: /, port: 80 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: frontend-nginx
+---
+# NodePort: opens port 30080 on the node, which kind-config.yaml maps to localhost:8091.
+# This is the cluster's single entry point, the job a load balancer does on AWS.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: netsim
+spec:
+  type: NodePort
+  # Keep the client's real source IP. By default a NodePort rewrites it to the node's own address,
+  # and every visitor would share one login rate-limit counter.
+  externalTrafficPolicy: Local
+  selector:
+    app: frontend
+  ports:
+    - port: 80
+      nodePort: 30080

@@ -1,0 +1,12 @@
+# A local Kubernetes cluster: one "node" that is really a Docker container on this Mac.
+# Create it with: kind create cluster --name netsim --config k8s/cluster/kind-config.yaml
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      # The Mac's 127.0.0.1:8091 -> port 30080 on the node, where the frontend's NodePort listens.
+      # This is the only way into the cluster from outside.
+      - containerPort: 30080
+        hostPort: 8091
+        listenAddress: "127.0.0.1"
