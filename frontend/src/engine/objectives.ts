@@ -129,6 +129,20 @@ function iosCheck(c: IosConfig, check: IosCheck): { done: boolean; detail: strin
   }
 }
 
-export function stars(cost: number, parCost: number, seconds: number, parTime: number): number {
-  return 1 + (cost <= parCost ? 1 : 0) + (seconds <= parTime ? 1 : 0)
+export interface StarRule {
+  label: string
+  earned: boolean
+}
+
+/** The three stars of a completed mission: finishing at all, then beating par time and par cost. */
+export function starRules(cost: number, parCost: number, seconds: number, parTime: number): StarRule[] {
+  return [
+    { label: 'Mission complete before the time limit', earned: true },
+    { label: `Finished within par time (${fmtTime(parTime)})`, earned: seconds <= parTime },
+    { label: `Spent no more than par cost ($${parCost})`, earned: cost <= parCost },
+  ]
+}
+
+export function fmtTime(s: number): string {
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
 }

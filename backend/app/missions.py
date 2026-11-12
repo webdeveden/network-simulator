@@ -38,6 +38,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 50,
         "par_cost": 10,
         "par_time": 120,
+        "time_limit": 240,
         "objectives": [
             _ping("PC1 can ping PC2", "PC1", "PC2"),
             _ping("PC2 can ping PC1", "PC2", "PC1"),
@@ -72,6 +73,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 300,
         "par_cost": 190,
         "par_time": 240,
+        "time_limit": 480,
         "objectives": [
             {
                 "type": "inSubnet",
@@ -110,6 +112,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 700,
         "par_cost": 520,
         "par_time": 300,
+        "time_limit": 600,
         "objectives": [
             _ping("PC-A can ping PC-B", "PC-A", "PC-B"),
             _ping("PC-B can ping PC-A", "PC-B", "PC-A"),
@@ -145,6 +148,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 50,
         "par_cost": 10,
         "par_time": 360,
+        "time_limit": 720,
         "objectives": [
             _ping("HQ-PC can ping BR-PC", "HQ-PC", "BR-PC"),
             _ping("BR-PC can ping HQ-PC", "BR-PC", "HQ-PC"),
@@ -182,6 +186,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 700,
         "par_cost": 540,
         "par_time": 600,
+        "time_limit": 1200,
         "objectives": [
             {
                 "type": "inSubnet",
@@ -228,6 +233,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 1000,
         "par_cost": 830,
         "par_time": 480,
+        "time_limit": 960,
         "objectives": [
             _ping("STAFF-PC can ping SERVER", "STAFF-PC", "SERVER"),
             _ping("GUEST-PC can ping its gateway 192.168.20.1", "GUEST-PC", "192.168.20.1"),
@@ -276,6 +282,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 0,
         "par_cost": 0,
         "par_time": 420,
+        "time_limit": 840,
         "objectives": [
             _tcp("INTERNET can open TCP/443 on WEB", "INTERNET", "WEB", 443),
             _tcp("INTERNET cannot open TCP/22 on WEB", "INTERNET", "WEB", 22, "fail"),
@@ -318,6 +325,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 0,
         "par_cost": 0,
         "par_time": 420,
+        "time_limit": 840,
         "objectives": [
             {"type": "ios", "label": "R1 has an enable secret", "device": "R1", "check": "enableSecret"},
             {"type": "ios", "label": "R1 vty lines accept SSH only", "device": "R1", "check": "sshOnly"},
@@ -361,6 +369,7 @@ MISSIONS: list[dict[str, Any]] = [
         "budget": 0,
         "par_cost": 0,
         "par_time": 420,
+        "time_limit": 840,
         "objectives": [
             {"type": "ios", "label": "AP1 secures its SSID with WPA2 (AES)", "device": "AP1", "check": "wpa2"},
             {"type": "wifi", "label": "LT1 joined OFFICE", "device": "LT1", "ssid": "OFFICE"},
