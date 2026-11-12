@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import Workspace from '../components/Workspace.vue'
 import { buildTopology } from '../engine/network'
-import { evaluate, stars } from '../engine/objectives'
+import { evaluate, fmtTime as fmt, starRules, type ObjectiveStatus, type StarRule } from '../engine/objectives'
 import { errorMessage, type Mission } from '../lib/api'
 import { useAuth } from '../stores/auth'
 import { useMissions } from '../stores/missions'
@@ -19,11 +19,18 @@ const error = ref<string | null>(null)
 const showBriefing = ref(true)
 const hintsShown = ref(0)
 const seconds = ref(0)
-const result = ref<{ stars: number; time: number; cost: number; saveError?: string } | null>(null)
+const result = ref<{ stars: number; rules: StarRule[]; time: number; cost: number; saveError?: string } | null>(null)
+/** Set means the mission failed: why, and the objectives that didn't work at that moment. */
+const failed = ref<{ reason: 'done' | 'time'; unmet: ObjectiveStatus[] } | null>(null)
+/** The briefing was accepted once: reopening it from the HUD then reads "resume". */
+const accepted = ref(false)
+const confirmingDone = ref(false)
+/** The player closed the result/failure screen to look at their network; the HUD can reopen it. */
+const outcomeHidden = ref(false)
 let timer: ReturnType<typeof setInterval> | undefined
 
 const status = computed(() => (mission.value ? evaluate(ws.topo, mission.value.objectives) : []))
-const allDone = computed(() => status.value.length > 0 && status.value.every((s) => s.done))
+const timeLeft = computed(() => (mission.value ? Math.max(0, mission.value.time_limit - seconds.value) : 0))
 const nextMission = computed(() =>
   mission.value ? missions.list.find((m) => m.order === mission.value!.order + 1) : undefined,
 )
@@ -34,9 +41,15 @@ function start() {
   seconds.value = 0
   hintsShown.value = 0
   result.value = null
+  failed.value = null
+  confirmingDone.value = false
+  outcomeHidden.value = false
   clearInterval(timer)
   timer = setInterval(() => {
-    if (!showBriefing.value && !result.value) seconds.value++
+    if (showBriefing.value || confirmingDone.value || result.value || failed.value) return
+    seconds.value++
+    // Out of time: grade what's there, as if the player had clicked done
+    if (seconds.value >= m.time_limit) finish('time')
   }, 1000)
 }
 
@@ -44,6 +57,7 @@ async function load() {
   error.value = null
   mission.value = null
   showBriefing.value = true
+  accepted.value = false
   try {
     if (!missions.list.length) await missions.load()
     mission.value = await missions.get(props.id)
@@ -57,13 +71,37 @@ onMounted(load)
 watch(() => props.id, load)
 onBeforeUnmount(() => clearInterval(timer))
 
-watch(allDone, async (done) => {
-  if (!done || result.value || !mission.value) return
+/** Escape closes whichever overlay is open: the confirm, or the result (to look at the finished network). */
+function onKey(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  if (showBriefing.value && accepted.value) showBriefing.value = false
+  else if (confirmingDone.value) confirmingDone.value = false
+  else if (result.value || failed.value) outcomeHidden.value = true
+}
+onMounted(() => window.addEventListener('keydown', onKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+
+function accept() {
+  accepted.value = true
+  showBriefing.value = false
+}
+
+function submitDone() {
+  confirmingDone.value = false
+  finish('done')
+}
+
+/** Grades the network as it is now: every objective must work, or the mission fails. */
+async function finish(reason: 'done' | 'time') {
+  if (result.value || failed.value || !mission.value) return
   const m = mission.value
-  const r = { stars: stars(ws.spent, m.par_cost, seconds.value, m.par_time), time: seconds.value, cost: ws.spent }
-  // Let the packet animation that triggered the win finish before covering the canvas.
-  await new Promise((res) => setTimeout(res, 2200))
-  if (!allDone.value || result.value || mission.value !== m) return
+  const unmet = status.value.filter((s) => !s.done)
+  if (unmet.length) {
+    failed.value = { reason, unmet }
+    return
+  }
+  const rules = starRules(ws.spent, m.par_cost, seconds.value, m.par_time)
+  const r = { stars: rules.filter((s) => s.earned).length, rules, time: seconds.value, cost: ws.spent }
   result.value = r
   try {
     await missions.complete(m.id, r.stars, r.time, r.cost, ws.topo)
@@ -72,9 +110,7 @@ watch(allDone, async (done) => {
     const saveError = auth.user ? errorMessage(e) : 'your login expired. Log in again and it will be saved.'
     result.value = { ...r, saveError }
   }
-})
-
-const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+}
 </script>
 
 <template>
@@ -90,12 +126,15 @@ const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${Str
             <span class="text-dim"> / ${{ mission.budget }} (par ${{ mission.par_cost }})</span>
           </span>
           <span>
-            time <span :class="seconds > mission.par_time ? 'text-warn' : 'text-neon'">{{ fmt(seconds) }}</span>
-            <span class="text-dim"> (par {{ fmt(mission.par_time) }})</span>
+            time left
+            <span :class="timeLeft <= 30 ? 'text-danger' : seconds > mission.par_time ? 'text-warn' : 'text-neon'">{{ fmt(timeLeft) }}</span>
+            <span class="text-dim"> (par: done in {{ fmt(mission.par_time) }})</span>
           </span>
           <div class="ml-auto flex gap-2">
             <button class="btn" @click="showBriefing = true">briefing</button>
             <button class="btn" @click="start">restart</button>
+            <button v-if="result || failed" class="btn btn-primary" @click="outcomeHidden = false">show result</button>
+            <button v-else class="btn btn-primary" @click="confirmingDone = true">done</button>
           </div>
         </div>
       </template>
@@ -125,13 +164,50 @@ const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${Str
         <ul class="mt-4 space-y-1 text-xs text-dim">
           <li v-for="o in mission.objectives" :key="o.label">› {{ o.label }}</li>
         </ul>
-        <button class="btn btn-primary mt-6" @click="showBriefing = false">&gt; accept mission</button>
+        <div class="mt-4 border-t border-line pt-3 text-[11px] leading-relaxed text-dim">
+          <p>
+            You have <span class="text-neon">{{ fmt(mission.time_limit) }}</span>. Click
+            <span class="text-neon">done</span> when your network is ready: if every objective works you pass, if not the
+            mission fails. When time runs out, your network is graded as it stands.
+          </p>
+          <p class="mt-1">
+            ★ complete it · ★ finish within {{ fmt(mission.par_time) }} · ★ spend no more than ${{ mission.par_cost }}
+          </p>
+        </div>
+        <div class="mt-6 flex gap-2">
+          <RouterLink to="/missions" class="btn">&lt; back to missions</RouterLink>
+          <button class="btn btn-primary" @click="accept">{{ accepted ? '> resume' : '> accept mission' }}</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirm done -->
+    <div
+      v-if="confirmingDone"
+      class="absolute inset-0 z-20 flex items-center justify-center bg-bg/80 backdrop-blur-sm"
+      @click.self="confirmingDone = false"
+    >
+      <div class="panel max-w-sm p-6 text-center">
+        <div class="text-sm font-bold text-neon">Submit for grading?</div>
+        <p class="mt-3 text-xs leading-relaxed text-dim">
+          Your network is checked as it is now. If every objective works you pass; if any fails, the mission fails.
+        </p>
+        <p class="mt-2 text-[11px] text-dim">The clock is paused while you decide.</p>
+        <div class="mt-6 flex justify-center gap-2">
+          <button class="btn" @click="confirmingDone = false">keep working</button>
+          <button class="btn btn-primary" @click="submitDone">submit</button>
+        </div>
       </div>
     </div>
 
     <!-- Result -->
-    <div v-if="result" class="absolute inset-0 z-20 flex items-center justify-center bg-bg/80 backdrop-blur-sm">
-      <div class="panel min-w-80 border-neon! p-6 text-center shadow-[0_0_30px_rgba(57,255,136,.3)]">
+    <div
+      v-if="result && !outcomeHidden"
+      class="absolute inset-0 z-20 flex items-center justify-center bg-bg/80 backdrop-blur-sm"
+      @click.self="outcomeHidden = true"
+    >
+      <div class="panel relative min-w-80 border-neon! p-6 text-center shadow-[0_0_30px_rgba(57,255,136,.3)]">
+        <button class="absolute top-2 right-3 text-dim hover:text-neon" title="Close (Esc)" @click="outcomeHidden = true">✕</button>
         <div class="text-lg font-bold text-neon glow">MISSION COMPLETE</div>
         <div class="mt-3 text-3xl tracking-widest text-warn">
           {{ '★'.repeat(result.stars) }}<span class="text-line">{{ '★'.repeat(3 - result.stars) }}</span>
@@ -139,14 +215,45 @@ const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${Str
         <div class="mt-3 text-xs text-dim">
           time {{ fmt(result.time) }} · cost ${{ result.cost }}
         </div>
+        <ul class="mx-auto mt-3 w-fit space-y-0.5 text-left text-[11px]">
+          <li v-for="s in result.rules" :key="s.label" :class="s.earned ? 'text-warn' : 'text-dim'">
+            {{ s.earned ? '★' : '☆' }} {{ s.label }}
+          </li>
+        </ul>
         <div v-if="result.saveError" class="mt-2 text-[11px] text-danger">
           Progress not saved: {{ result.saveError }}
           <RouterLink v-if="!auth.user" to="/login" class="underline">log in</RouterLink>
         </div>
         <div class="mt-6 flex justify-center gap-2">
-          <button class="btn" @click="start">retry</button>
-          <RouterLink to="/missions" class="btn">missions</RouterLink>
-          <RouterLink v-if="nextMission" :to="`/missions/${nextMission.id}`" class="btn btn-primary">next &gt;</RouterLink>
+          <button class="btn" @click="start">play again</button>
+          <RouterLink to="/missions" class="btn">all missions</RouterLink>
+          <RouterLink v-if="nextMission" :to="`/missions/${nextMission.id}`" class="btn btn-primary">next mission &gt;</RouterLink>
+        </div>
+      </div>
+    </div>
+
+    <!-- Failed: graded with objectives still broken -->
+    <div
+      v-if="failed && !outcomeHidden"
+      class="absolute inset-0 z-20 flex items-center justify-center bg-bg/80 backdrop-blur-sm"
+      @click.self="outcomeHidden = true"
+    >
+      <div class="panel relative max-w-md min-w-80 border-danger! p-6 text-center">
+        <button class="absolute top-2 right-3 text-dim hover:text-danger" title="Close (Esc)" @click="outcomeHidden = true">✕</button>
+        <div class="text-lg font-bold text-danger">MISSION FAILED</div>
+        <div class="mt-2 text-xs text-dim">
+          {{ failed.reason === 'time' ? `Time's up (${fmt(mission.time_limit)}).` : `Submitted at ${fmt(seconds)}.` }}
+          These objectives didn't work:
+        </div>
+        <ul class="mt-3 space-y-1.5 text-left text-xs">
+          <li v-for="s in failed.unmet" :key="s.objective.label">
+            <span class="text-danger">[ ]</span> {{ s.objective.label }}
+            <div class="ml-6 text-[11px] text-dim">{{ s.detail }}</div>
+          </li>
+        </ul>
+        <div class="mt-6 flex justify-center gap-2">
+          <button class="btn btn-primary" @click="start">try again</button>
+          <RouterLink to="/missions" class="btn">all missions</RouterLink>
         </div>
       </div>
     </div>

@@ -3,7 +3,7 @@ import { execute } from './commands'
 import { emptySimState, ping, sendPacket } from './forwarding'
 import { inSubnet, isValidIp, networkOf, parseCidr } from './ip'
 import { addDevice, buildTopology, connect, emptyTopology, setIfaceIp } from './network'
-import { evaluate } from './objectives'
+import { evaluate, starRules } from './objectives'
 import type { Topology } from './types'
 
 const state = () => emptySimState()
@@ -182,5 +182,18 @@ describe('objectives', () => {
     expect(inNet.done).toBe(true)
     expect(distinct.done).toBe(true)
     expect(overlap.done).toBe(false)
+  })
+})
+
+describe('star rules', () => {
+  const earned = (cost: number, seconds: number) => starRules(cost, 100, seconds, 120).map((s) => s.earned)
+
+  it('always gives the completion star', () => {
+    expect(earned(500, 999)).toEqual([true, false, false])
+  })
+
+  it('adds a star each for par time and par cost, both inclusive', () => {
+    expect(earned(100, 120)).toEqual([true, true, true])
+    expect(earned(101, 60)).toEqual([true, true, false])
   })
 })

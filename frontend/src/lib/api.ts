@@ -41,6 +41,8 @@ export interface Mission {
   budget: number
   par_cost: number
   par_time: number
+  /** Seconds before the mission fails. */
+  time_limit: number
   objectives: Objective[]
   hints: string[]
 }

@@ -215,6 +215,10 @@ After editing the dashboard JSON: `docker compose restart grafana`. The JSON can
 exported over the file, or regenerated with `python3 monitoring/grafana/build_dashboard.py` (one `panel()`
 call per panel: title, PromQL query, position).
 
+### Kubernetes (local)
+
+The same app on a local kind cluster, with 2 backend pods: see [k8s/README.md](k8s/README.md).
+
 ## Tests
 
 ```bash

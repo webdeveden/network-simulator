@@ -1,0 +1,6 @@
+# A namespace is a folder for resources: names can't clash with other apps, and
+# `kubectl delete namespace netsim` removes everything in it at once.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netsim

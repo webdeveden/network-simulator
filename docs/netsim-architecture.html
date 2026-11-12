@@ -105,7 +105,7 @@
 <header class="top">
   <button class="theme-btn" id="themeBtn" type="button">Theme</button>
   <h1>How NetSim fits together</h1>
-  <p>Frontend, backend, Redis (rate limiting and caching) and monitoring (Prometheus + Grafana), step by step.</p>
+  <p>Frontend, backend, Redis (rate limiting and caching), monitoring (Prometheus + Grafana) and Kubernetes, step by step. Updated 6 November 2026.</p>
 </header>
 
 <nav class="toc">
@@ -114,13 +114,17 @@
   <a href="#login">3. Login + rate limit</a>
   <a href="#caching">4. Caching</a>
   <a href="#monitoring">5. Monitoring</a>
-  <a href="#cheatsheet">6. Cheat sheet</a>
+  <a href="#kubernetes">6. Kubernetes</a>
+  <a href="#inside">7. Inside the cluster</a>
+  <a href="#k8s-files">8. The k8s/ folder</a>
+  <a href="#status">9. Status + production</a>
+  <a href="#cheatsheet">10. Cheat sheet</a>
 </nav>
 
 <!-- ============================================================ 1 -->
 <section id="big-picture">
   <h2>1. The big picture</h2>
-  <p class="sub">Every box is one container from <code>docker-compose.yml</code>, except your browser and you.</p>
+  <p class="sub">The compose version: every box is one container from <code>docker-compose.yml</code>, except your browser and you. The Kubernetes version of the app is in <a href="#kubernetes">section 6</a>.</p>
 
   <figure>
     <svg viewBox="0 0 860 470" role="img" aria-label="Architecture diagram: browser to nginx to backend, which uses Postgres and Redis; Prometheus scrapes the backend and exporters; Grafana queries Prometheus.">
@@ -199,7 +203,7 @@
   <figure><svg data-seq="opening" role="img" aria-label="Sequence diagram: loading the page and calling the API"></svg></figure>
 
   <p><strong>Why nginx in front?</strong> In production there's no Vite dev server. <code>npm run build</code> turns the Vue code into plain files in <code>dist/</code>, and nginx serves them very fast. nginx also forwards <code>/api/*</code> to the backend, so the browser and the API share one address, which avoids CORS problems. Anything that isn't a file, like <code>/missions</code>, gets <code>index.html</code> back (<code>try_files</code>), and Vue picks the page.</p>
-  <div class="note">nginx looks up the name <code>backend</code> again every 10 seconds (<code>resolver 127.0.0.11</code>). Without that, recreating the backend container gives it a new IP and every API call fails with 502.</div>
+  <div class="note">nginx looks up the name <code>backend</code> again every 10 seconds (<code>resolver 127.0.0.11</code>). Without that, recreating the backend container gives it a new IP and every API call fails with 502. This applies to compose only: Kubernetes mounts its own nginx config, because a Service keeps one stable IP (<a href="#inside">section 7</a>).</div>
   <p class="files"><strong>Files:</strong> <code>frontend/nginx.conf</code> (routing, cache headers, real IP) · <code>frontend/src/lib/api.ts</code> (<code>baseURL: '/api'</code>) · <code>backend/app/main.py</code> (routers) · <code>backend/app/security.py</code> (JWT check)</p>
 </section>
 
@@ -217,7 +221,7 @@
     <tr><td>Redis down</td><td>–</td><td>login still works</td><td>fail open: logged, and counted in <code>netsim_redis_errors_total</code></td></tr>
   </table></div>
   <p class="files"><strong>Files:</strong> <code>backend/app/routers/auth.py</code> (login flow) · <code>backend/app/ratelimit.py</code> (the counter) · <code>backend/app/redis_client.py</code> (one shared connection, from <code>REDIS_URL</code>)<br>
-  <strong>Watch it live:</strong> <code>docker compose exec redis redis-cli --scan --pattern 'login:fail:*'</code></p>
+  <strong>Watch it live:</strong> <code>docker compose exec redis redis-cli --scan --pattern 'login:fail:*'</code>, or on Kubernetes: <code>kubectl -n netsim exec deploy/redis -- redis-cli --scan --pattern 'login:fail:*'</code></p>
 </section>
 
 <!-- ============================================================ 4 -->
@@ -250,12 +254,174 @@
     <tr><td>Grafana</td><td>stores no data: asks Prometheus in PromQL and draws the answer</td><td><code>monitoring/grafana/</code> (data source, <code>netsim.json</code>)</td></tr>
   </table></div>
   <p><strong><code>rate()</code></strong> turns an ever-growing total into "how fast right now". <strong>Labels</strong> like <code>result</code> split one counter into several series; keep their values a small, fixed set (never usernames or IPs). <code>/metrics</code> isn't reachable through nginx, which only forwards <code>/api/</code>: only containers inside the Docker network can read it.</p>
+  <div class="note"><strong>Monitoring runs in compose only.</strong> Prometheus, Grafana and the exporters aren't in the cluster yet, so nothing is watching the Kubernetes copy of the app. Moving them in is Phase 3.</div>
 </section>
 
 <!-- ============================================================ 6 -->
+<section id="kubernetes">
+  <h2>6. Kubernetes: the same app, kept running for you</h2>
+  <p class="sub">A second, separate copy of NetSim at <code>localhost:8091</code>: 5 pods on 1 node. You describe what you want, and Kubernetes keeps making it true.</p>
+
+  <figure>
+    <svg viewBox="0 0 860 566" role="img" aria-label="Kubernetes diagram: the browser reaches the frontend Service and nginx pod, which forwards to the backend Service and 2 backend pods, which use the Redis and Postgres Services. All of it runs in the netsim namespace on one node, managed by the control plane.">
+      <rect x="175" y="28" width="673" height="496" rx="12" style="fill:none;stroke:var(--dim)" stroke-dasharray="7 5"/>
+      <text x="189" y="47" font-size="12" font-weight="600" style="fill:var(--dim)">Node netsim-control-plane: a Docker container acting as one machine</text>
+      <rect x="190" y="58" width="643" height="375" rx="10" style="fill:none;stroke:var(--dim)" stroke-dasharray="3 4"/>
+      <text x="204" y="77" font-size="12" font-weight="600" style="fill:var(--dim)">Namespace netsim</text>
+
+      <g id="k8s-boxes"></g>
+
+      <g style="stroke:var(--ink)" stroke-width="1.6" fill="none">
+        <line x1="150" y1="131" x2="204" y2="131" marker-start="url(#a-ink)" marker-end="url(#a-ink)"/>
+        <line x1="336" y1="131" x2="362" y2="131" marker-end="url(#a-ink)"/>
+        <line x1="480" y1="131" x2="506" y2="131" marker-end="url(#a-ink)"/>
+        <line x1="630" y1="126" x2="658" y2="107" marker-end="url(#a-ink)"/>
+        <line x1="630" y1="136" x2="658" y2="159" marker-end="url(#a-ink)"/>
+        <line x1="700" y1="182" x2="560" y2="222" marker-end="url(#a-ink)"/>
+        <line x1="760" y1="182" x2="740" y2="222" marker-end="url(#a-ink)"/>
+        <line x1="545" y1="268" x2="545" y2="296" marker-end="url(#a-ink)"/>
+        <line x1="735" y1="268" x2="735" y2="296" marker-end="url(#a-ink)"/>
+        <line x1="735" y1="342" x2="735" y2="372" marker-end="url(#a-ink)"/>
+        <line x1="150" y1="477" x2="204" y2="477" marker-end="url(#a-ink)"/>
+      </g>
+      <g font-size="11" text-anchor="middle" style="fill:var(--ink)">
+        <text class="halo" x="177" y="120">HTTP</text>
+        <text class="halo" x="177" y="466">YAML</text>
+        <text class="halo" x="85" y="184">Mac 8091 to node 30080</text>
+        <text class="halo" x="85" y="198">your Mac only</text>
+        <text class="halo" x="325" y="406" style="fill:var(--dim)">Pods read settings when they start</text>
+      </g>
+
+      <rect x="20" y="538" width="30" height="16" rx="8" style="fill:var(--you-bg);stroke:var(--you)" stroke-width="1.4"/>
+      <text x="58" y="551" font-size="12" style="fill:var(--ink)">Service: a stable name and address</text>
+      <rect x="300" y="538" width="30" height="16" rx="3" style="fill:var(--back-bg);stroke:var(--back)" stroke-width="1.4"/>
+      <text x="338" y="551" font-size="12" style="fill:var(--ink)">Pod: one running copy, replaceable at any time</text>
+    </svg>
+  </figure>
+
+  <p><strong>The app code didn't change.</strong> Kubernetes runs the same kind of Docker images, and nothing was added to <code>requirements.txt</code> or <code>package.json</code>. What's new is the <code>k8s/</code> folder, which describes how to run those images.</p>
+  <ul>
+    <li><strong>Node:</strong> a machine. Yours is one Docker container pretending to be one.</li>
+    <li><strong>Pod:</strong> one running copy of a program on a node. Pods are disposable.</li>
+    <li><strong>Deployment:</strong> "keep N pods of this image running." <strong>StatefulSet</strong> does the same for pods that need a fixed name and their own disk.</li>
+    <li><strong>Service:</strong> a stable name and IP in front of pods. It finds them by label, such as <code>app: backend</code>.</li>
+    <li><strong>Namespace:</strong> a folder that keeps NetSim's resources together.</li>
+  </ul>
+  <div class="note"><strong>Two backends only work because of Redis.</strong> Login counters and cached progress live in Redis, not in Python's memory, so both pods see the same numbers.</div>
+
+  <h3>Compose and Kubernetes side by side</h3>
+  <div class="table-wrap"><table>
+    <tr><th></th><th>Compose</th><th>Kubernetes</th></tr>
+    <tr><td>Address</td><td><code>localhost:8090</code></td><td><code>localhost:8091</code></td></tr>
+    <tr><td>Backend copies</td><td>1</td><td>2, with traffic shared between them</td></tr>
+    <tr><td>Data</td><td>Its own Postgres and Redis</td><td>Its own Postgres and Redis: accounts aren't shared</td></tr>
+    <tr><td>Secrets</td><td><code>.env</code></td><td>Secret <code>netsim-secrets</code>, stored in the cluster</td></tr>
+    <tr><td>Migrations</td><td>In the backend's start command</td><td>A Job that runs once, so 2 pods can't migrate at the same time</td></tr>
+    <tr><td>Deleted container or pod</td><td>Stays gone until you run <code>up</code></td><td>Replaced automatically</td></tr>
+    <tr><td>Monitoring</td><td>Prometheus and Grafana</td><td>Not yet (Phase 3)</td></tr>
+    <tr><td>Best for</td><td>Everyday development</td><td>Practising production</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ 7 -->
+<section id="inside">
+  <h2>7. Inside the cluster: a request, and a replaced pod</h2>
+  <p class="sub">Each step passes the request along. The frontend Service is the only way in for app traffic.</p>
+  <figure><svg data-seq="k8sRequest" role="img" aria-label="Sequence diagram: a request from the browser through the frontend Service and nginx to the backend Service and one backend pod"></svg></figure>
+
+  <h3>The ports, in order</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Port</th><th>Where it exists</th><th>Set in</th></tr>
+    <tr><td><code>8091</code></td><td>Your Mac, <code>127.0.0.1</code> only</td><td><code>k8s/cluster/kind-config.yaml</code> (<code>hostPort</code>)</td></tr>
+    <tr><td><code>30080</code></td><td>The node container</td><td><code>kind-config.yaml</code> (<code>containerPort</code>) and <code>40-frontend.yaml</code> (<code>nodePort</code>): they must match</td></tr>
+    <tr><td><code>80</code></td><td>The frontend Service and pod, where nginx listens</td><td><code>40-frontend.yaml</code>, <code>10-config.yaml</code> (<code>listen 80</code>)</td></tr>
+    <tr><td><code>8000</code></td><td>The backend Service and pods, where FastAPI listens</td><td><code>30-backend.yaml</code></td></tr>
+  </table></div>
+
+  <p><strong>Why nginx needs no <code>resolver</code> here.</strong> A pod's IP changes when it's replaced, but a Service's IP doesn't. nginx talks to the Service, so the 502 problem from compose can't happen this way.</p>
+  <p><strong>Keeping the visitor's real IP.</strong> The login rate limit counts failures per IP, so two settings protect that IP on its way through. <code>externalTrafficPolicy: Local</code> stops the NodePort from replacing it with the node's address. <code>FORWARDED_ALLOW_IPS: 10.244.0.0/16</code> makes uvicorn believe <code>X-Forwarded-For</code> only from pods, because that range is where <code>kind</code> gives pods their IPs.</p>
+
+  <h3>When a pod disappears</h3>
+  <p>Kubernetes doesn't wait to be told what to do. A controller keeps comparing what you asked for with what's running. This happened on your cluster: pod <code>hnmf7</code> is gone, and <code>pgjqd</code> took its place.</p>
+  <figure><svg data-seq="heal" role="img" aria-label="Sequence diagram: a deleted backend pod is replaced by the controller and added back to the Service once ready"></svg></figure>
+
+  <div class="table-wrap"><table>
+    <tr><th>If this pod goes away</th><th>What happens</th></tr>
+    <tr><td>One backend</td><td>The app stays up on the other pod while the replacement starts</td></tr>
+    <tr><td>Frontend</td><td>The site is down until the replacement is ready, because there's only 1</td></tr>
+    <tr><td>Redis</td><td>Comes back empty: cached data and login counters reset, nothing permanent is lost</td></tr>
+    <tr><td><code>postgres-0</code></td><td>The database is down until it returns, with the same name and the same disk</td></tr>
+  </table></div>
+</section>
+
+<!-- ============================================================ 8 -->
+<section id="k8s-files">
+  <h2>8. The k8s/ folder, file by file</h2>
+  <p class="sub">These files are instructions, not running code. A tool reads them once and the cluster keeps its own copy, so editing a file changes nothing until you apply it.</p>
+  <div class="table-wrap"><table>
+    <tr><th>File</th><th>Creates</th><th>Read by</th><th>Compose equivalent</th></tr>
+    <tr><td><code>cluster/kind-config.yaml</code></td><td>The cluster and the 8091 port mapping</td><td><code>kind</code></td><td>–</td></tr>
+    <tr><td><code>00-namespace.yaml</code></td><td>Namespace <code>netsim</code></td><td><code>kubectl</code></td><td>The project name</td></tr>
+    <tr><td><code>10-config.yaml</code></td><td>ConfigMaps <code>netsim-config</code> and <code>frontend-nginx</code></td><td><code>kubectl</code></td><td><code>environment:</code>, <code>frontend/nginx.conf</code></td></tr>
+    <tr><td><code>create-secret.sh</code></td><td>Secret <code>netsim-secrets</code>, with random values</td><td>Your shell</td><td><code>.env</code></td></tr>
+    <tr><td><code>20-postgres.yaml</code></td><td>StatefulSet, 1Gi disk, Service <code>db</code></td><td><code>kubectl</code></td><td><code>db:</code>, <code>pgdata</code></td></tr>
+    <tr><td><code>21-redis.yaml</code></td><td>Deployment, Service <code>redis</code></td><td><code>kubectl</code></td><td><code>redis:</code></td></tr>
+    <tr><td><code>30-backend.yaml</code></td><td>Deployment (2 pods), internal Service</td><td><code>kubectl</code></td><td><code>backend:</code></td></tr>
+    <tr><td><code>31-migrate-job.yaml</code></td><td>Job that runs <code>alembic upgrade head</code></td><td><code>kubectl</code></td><td>Part of <code>command:</code></td></tr>
+    <tr><td><code>40-frontend.yaml</code></td><td>Deployment, NodePort Service</td><td><code>kubectl</code></td><td><code>frontend:</code>, <code>ports:</code></td></tr>
+    <tr><td><code>README.md</code></td><td>Nothing: the setup instructions</td><td>People</td><td>–</td></tr>
+  </table></div>
+
+  <h3>Reading a resource</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Field</th><th>Meaning</th><th>Who decides</th></tr>
+    <tr><td><code>apiVersion</code></td><td>Which version of the format, like <code>apps/v1</code> (group + version)</td><td>Kubernetes</td></tr>
+    <tr><td><code>kind</code></td><td>The type of resource, like <code>Deployment</code>. Case-sensitive</td><td>Kubernetes</td></tr>
+    <tr><td><code>metadata.name</code></td><td>Its name, which other resources use to refer to it</td><td>You</td></tr>
+    <tr><td><code>spec</code></td><td>What you want. Its fields depend on the <code>kind</code></td><td>You</td></tr>
+    <tr><td><code>---</code></td><td>Separates two resources in one file, so each needs its own <code>apiVersion</code></td><td>YAML</td></tr>
+  </table></div>
+  <div class="note"><code>kubectl apply -f k8s/</code> goes through the top-level YAML files in filename order. It skips <code>cluster/</code>, the README and the script, and leaves unchanged resources alone. On a new cluster, create the namespace and run <code>create-secret.sh</code> first.</div>
+</section>
+
+<!-- ============================================================ 9 -->
+<section id="status">
+  <h2>9. Status, and how this reaches production</h2>
+  <p class="sub">Where things stand on 6 November 2026.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Item</th><th>State</th></tr>
+    <tr><td>App on Kubernetes</td><td><strong>Running.</strong> 5 pods healthy, using images built from commit <code>09fa255</code></td></tr>
+    <tr><td>Rate limit and cache across 2 pods</td><td><strong>Tested</strong> through <code>localhost:8091</code>, with one client</td></tr>
+    <tr><td>Replacing a deleted backend pod</td><td><strong>Seen working</strong></td></tr>
+    <tr><td><code>k8s/</code>, <code>README.md</code>, <code>ci.yml</code></td><td><strong>Uncommitted.</strong> Only on your Mac</td></tr>
+    <tr><td>Multi-arch images in CI</td><td><strong>Not run yet.</strong> It only takes effect once it's on <code>main</code></td></tr>
+    <tr><td><code>k8s/README.md</code> "First run"</td><td><strong>Not tested</strong> from a clean start</td></tr>
+    <tr><td>Rolling update and rollback (Phase 2)</td><td><strong>Not done</strong></td></tr>
+    <tr><td>Monitoring in the cluster (Phase 3)</td><td><strong>Not done</strong></td></tr>
+    <tr><td>Terraform, AWS, deployment from CI</td><td><strong>Not started</strong></td></tr>
+  </table></div>
+
+  <h3>Production plan (not built yet)</h3>
+  <p>The path inside the cluster stays the same. Traffic comes in through a load balancer, and the data moves out to AWS services.</p>
+  <div class="table-wrap"><table>
+    <tr><th>Part</th><th>Local</th><th>Production</th></tr>
+    <tr><td>Cluster</td><td><code>kind</code>, 1 node</td><td>EKS, several EC2 nodes, created with Terraform</td></tr>
+    <tr><td>Way in</td><td><code>localhost:8091</code>, NodePort</td><td>A domain, a load balancer, HTTPS</td></tr>
+    <tr><td>Images</td><td>Built on your Mac, <code>kind load</code></td><td>Pulled from GHCR, pinned to a commit</td></tr>
+    <tr><td>Postgres / Redis</td><td>Pods</td><td>RDS / ElastiCache</td></tr>
+    <tr><td>Secrets</td><td><code>create-secret.sh</code></td><td>AWS Secrets Manager</td></tr>
+    <tr><td><code>ALLOWED_ORIGINS</code></td><td><code>http://localhost:8091</code></td><td>The real domain</td></tr>
+    <tr><td><code>FORWARDED_ALLOW_IPS</code></td><td><code>10.244.0.0/16</code></td><td>The VPC's pod range</td></tr>
+    <tr><td>Deploys</td><td>You run <code>kubectl apply</code></td><td>GitHub Actions</td></tr>
+  </table></div>
+  <div class="note"><strong>One setting must change before going live.</strong> nginx overwrites <code>X-Forwarded-For</code> with whoever connected to it, which in production is the load balancer. Every visitor would then share one login counter. The production nginx config needs <code>set_real_ip_from</code> and <code>real_ip_header</code> so it trusts the load balancer and reads the real IP.</div>
+</section>
+
+<!-- ============================================================ 10 -->
 <section id="cheatsheet">
-  <h2>6. Cheat sheet</h2>
+  <h2>10. Cheat sheet</h2>
   <p class="sub">Every service, how to reach it, and where to look when something's wrong.</p>
+  <h3>Compose (localhost:8090)</h3>
   <div class="table-wrap"><table>
     <tr><th>Service</th><th>From your Mac</th><th>Inside Docker</th><th>Keeps data?</th><th>Role</th></tr>
     <tr><td>frontend (nginx)</td><td><code>http://localhost:8090</code></td><td><code>frontend:80</code></td><td>no</td><td>Vue app + forwards <code>/api/*</code></td></tr>
@@ -265,6 +431,28 @@
     <tr><td>prometheus</td><td><code>http://localhost:9090</code></td><td><code>prometheus:9090</code></td><td>yes, <code>promdata</code> (7 days)</td><td>scrape, store, alert</td></tr>
     <tr><td>grafana</td><td><code>http://localhost:3000</code> (admin)</td><td><code>grafana:3000</code></td><td>yes, <code>grafanadata</code></td><td>dashboards</td></tr>
     <tr><td>redis-exporter / postgres-exporter</td><td>–</td><td><code>:9121</code> / <code>:9187</code></td><td>no</td><td>stats for Prometheus</td></tr>
+  </table></div>
+
+  <h3>Kubernetes (localhost:8091)</h3>
+  <div class="table-wrap"><table>
+    <tr><th>Service</th><th>From your Mac</th><th>Inside the cluster</th><th>Keeps data?</th></tr>
+    <tr><td>frontend</td><td><code>http://localhost:8091</code></td><td><code>frontend:80</code></td><td>no</td></tr>
+    <tr><td>backend</td><td>Not exposed. For debugging: <code>kubectl -n netsim port-forward svc/backend 8012:8000</code></td><td><code>backend:8000</code></td><td>no</td></tr>
+    <tr><td>db</td><td><code>kubectl -n netsim exec -it postgres-0 -- psql -U netsim netsim</code></td><td><code>db:5432</code></td><td>yes, 1Gi volume <code>data-postgres-0</code></td></tr>
+    <tr><td>redis</td><td><code>kubectl -n netsim exec -it deploy/redis -- redis-cli</code></td><td><code>redis:6379</code></td><td>no (by design)</td></tr>
+  </table></div>
+
+  <div class="table-wrap"><table>
+    <tr><th>I want to…</th><th>Command</th></tr>
+    <tr><td>See everything</td><td><code>kubectl -n netsim get pods,svc,deploy,statefulset</code></td></tr>
+    <tr><td>See which IP and node each pod has</td><td><code>kubectl -n netsim get pods -o wide</code></td></tr>
+    <tr><td>Watch pods change live</td><td><code>kubectl -n netsim get pods -w</code></td></tr>
+    <tr><td>Read logs from both backend pods</td><td><code>kubectl -n netsim logs -l app=backend -f --prefix</code></td></tr>
+    <tr><td>Find out why a pod won't start</td><td><code>kubectl -n netsim describe pod &lt;name&gt;</code>, then read Events at the bottom</td></tr>
+    <tr><td>Apply changed YAML</td><td><code>kubectl apply -f k8s/</code></td></tr>
+    <tr><td>Reload after a ConfigMap or image change</td><td><code>kubectl -n netsim rollout restart deployment/backend</code></td></tr>
+    <tr><td>Pause / resume the cluster</td><td><code>docker stop netsim-control-plane</code> / <code>docker start netsim-control-plane</code></td></tr>
+    <tr><td>Delete the cluster and all its data</td><td><code>kind delete cluster --name netsim</code></td></tr>
   </table></div>
 
   <h3>Something's wrong?</h3>
@@ -277,9 +465,14 @@
     <tr><td>An alert fired</td><td><code>http://localhost:9090/alerts</code>, then the matching Grafana panel</td></tr>
     <tr><td>Changed <code>prometheus.yml</code> / <code>alerts.yml</code></td><td><code>curl -X POST localhost:9090/-/reload</code></td></tr>
     <tr><td>Changed the dashboard</td><td><code>python3 monitoring/grafana/build_dashboard.py</code>, then <code>docker compose restart grafana</code></td></tr>
+    <tr><td>Pod says <code>ImagePullBackOff</code> or <code>ErrImageNeverPull</code></td><td>The image isn't on the node: <code>kind load docker-image netsim-backend:local --name netsim</code></td></tr>
+    <tr><td>Pod says <code>CreateContainerConfigError</code></td><td>A ConfigMap or Secret it references is missing or misnamed: <code>kubectl -n netsim describe pod &lt;name&gt;</code></td></tr>
+    <tr><td>Pod says <code>CrashLoopBackOff</code></td><td>The program keeps crashing: <code>kubectl -n netsim logs &lt;name&gt; --previous</code></td></tr>
+    <tr><td>Pod stays <code>0/1</code></td><td>Its readiness check is failing, so it gets no traffic: read Events in <code>describe pod</code></td></tr>
+    <tr><td>Edited YAML, nothing changed</td><td>The cluster uses its own stored copy: run <code>kubectl apply</code> again</td></tr>
   </table></div>
 
-  <div class="note"><strong>One request, end to end:</strong> browser → nginx (:8090) → backend (:8000) → Redis first (rate limit / cache) → Postgres if needed → the answer travels back the same way. Meanwhile Prometheus scrapes the backend and exporters every 15s, and Grafana graphs the numbers.</div>
+  <div class="note"><strong>One request, end to end:</strong> browser → nginx (:8090) → backend (:8000) → Redis first (rate limit / cache) → Postgres if needed → the answer travels back the same way. Meanwhile Prometheus scrapes the backend and exporters every 15s, and Grafana graphs the numbers. On Kubernetes the path is the same, starting at :8091 and with a Service in front of each set of pods.</div>
 </section>
 
 </div>
@@ -298,10 +491,16 @@
   });
 })();
 
-// ---------------------------------------------------------------- boxes on the big picture
-(function () {
-  const g = document.getElementById('boxes');
-  const boxes = [
+// ---------------------------------------------------------------- boxes on the big pictures
+function drawBoxes(id, boxes) {
+  document.getElementById(id).innerHTML = boxes.map(([x, y, w, h, k, title, lines, rx = 8]) =>
+    `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" style="fill:var(--${k}-bg);stroke:var(--${k})" stroke-width="1.6"/>` +
+    `<text x="${x + w / 2}" y="${y + 20}" font-size="13.5" font-weight="600" text-anchor="middle" style="fill:var(--${k})">${title}</text>` +
+    lines.map((l, i) => `<text x="${x + w / 2}" y="${y + 36 + i * 14}" font-size="11" text-anchor="middle" style="fill:var(--ink)">${l}</text>`).join('')
+  ).join('');
+}
+
+drawBoxes('boxes', [
     [20, 80, 130, 66, 'browser', 'Your browser', ['localhost:8090']],
     [200, 80, 170, 66, 'front', 'frontend (nginx)', ['serves the Vue app', 'forwards /api/* only']],
     [420, 80, 170, 66, 'back', 'backend (FastAPI)', ['the API · port 8000', '/metrics for Prometheus']],
@@ -312,13 +511,27 @@
     [420, 330, 170, 66, 'mon', 'prometheus', ['scrapes + stores numbers', 'checks alert rules']],
     [660, 250, 170, 46, 'mon', 'redis-exporter', ['Redis stats as /metrics']],
     [660, 340, 170, 46, 'mon', 'postgres-exporter', ['Postgres stats as /metrics']],
-  ];
-  g.innerHTML = boxes.map(([x, y, w, h, k, title, lines]) =>
-    `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" style="fill:var(--${k}-bg);stroke:var(--${k})" stroke-width="1.6"/>` +
-    `<text x="${x + w / 2}" y="${y + 20}" font-size="13.5" font-weight="600" text-anchor="middle" style="fill:var(--${k})">${title}</text>` +
-    lines.map((l, i) => `<text x="${x + w / 2}" y="${y + 36 + i * 14}" font-size="11" text-anchor="middle" style="fill:var(--ink)">${l}</text>`).join('')
-  ).join('');
-})();
+]);
+
+drawBoxes('k8s-boxes', [
+  [20, 98, 130, 66, 'browser', 'Your browser', ['localhost:8091']],
+  [20, 446, 130, 62, 'you', 'kubectl', ['apply -f k8s/']],
+  [204, 108, 132, 46, 'you', 'Service frontend', ['NodePort 30080'], 23],
+  [362, 108, 118, 46, 'front', 'frontend pod', ['nginx :80']],
+  [506, 108, 124, 46, 'you', 'Service backend', ['ClusterIP :8000'], 23],
+  [658, 84, 162, 46, 'back', 'backend pod 1', ['FastAPI :8000']],
+  [658, 136, 162, 46, 'back', 'backend pod 2', ['FastAPI :8000']],
+  [470, 222, 150, 46, 'you', 'Service redis', ['ClusterIP :6379'], 23],
+  [650, 222, 170, 46, 'you', 'Service db', ['ClusterIP :5432'], 23],
+  [470, 296, 150, 46, 'redis', 'redis pod', ['no disk, on purpose']],
+  [650, 296, 170, 46, 'pg', 'postgres-0 pod', ['StatefulSet']],
+  [650, 372, 170, 46, 'pg', 'data-postgres-0', ['1Gi disk, survives restarts']],
+  [204, 180, 240, 46, 'you', 'ConfigMap netsim-config', ['REDIS_URL, ALLOWED_ORIGINS and more']],
+  [204, 232, 240, 46, 'you', 'ConfigMap frontend-nginx', ["nginx config, mounted over the image's"]],
+  [204, 284, 240, 46, 'you', 'Secret netsim-secrets', ['passwords, DATABASE_URL, token key']],
+  [204, 336, 240, 46, 'you', 'Job migrate', ['alembic upgrade head, then it stops']],
+  [204, 446, 616, 62, 'you', 'Control plane: API server, etcd and controllers', ['Stores your YAML as what you want, and keeps comparing it with what is running']],
+]);
 
 // ---------------------------------------------------------------- sequence diagrams
 const SEQ = {
@@ -380,6 +593,36 @@ const SEQ = {
       ['msg', 'be', 'pg', 'UPDATE progress … COMMIT'],
       ['msg', 'be', 'rd', 'DEL cache:progress:user:132'],
       ['self', 'be', 'the next GET is a MISS again, with fresh data'],
+    ],
+  },
+  k8sRequest: {
+    parts: [['br', 'Browser', 'browser'], ['np', 'Service frontend', 'you'], ['ng', 'frontend pod', 'front'], ['sv', 'Service backend', 'you'], ['be', 'backend pod', 'back']],
+    msgs: [
+      ['section', 'A. Getting into the cluster'],
+      ['msg', 'br', 'np', 'localhost:8091'],
+      ['self', 'np', 'kind-config.yaml maps Mac 8091 to node 30080'],
+      ['msg', 'np', 'ng', 'port 30080 to port 80'],
+      ['self', 'ng', 'location /api/ matches: forward it'],
+      ['section', 'B. Finding a backend: nginx knows a name, never a pod'],
+      ['self', 'ng', 'CoreDNS turns "backend" into the Service IP'],
+      ['msg', 'ng', 'sv', 'backend:8000'],
+      ['msg', 'sv', 'be', 'one ready pod'],
+      ['self', 'be', 'Redis, then Postgres if needed'],
+      ['ret', 'be', 'ng', '200 JSON'],
+      ['ret', 'ng', 'br', '200 JSON  (the same way back)'],
+    ],
+  },
+  heal: {
+    parts: [['you', 'You', 'you'], ['api', 'API server', 'you'], ['ct', 'Controller', 'mon'], ['kl', 'Node', 'back'], ['sv', 'Service backend', 'you']],
+    msgs: [
+      ['msg', 'you', 'api', 'kubectl delete pod backend-…-hnmf7'],
+      ['self', 'ct', 'wanted 2 pods, found 1'],
+      ['msg', 'ct', 'api', 'create 1 pod'],
+      ['msg', 'api', 'kl', 'run this pod'],
+      ['self', 'kl', 'starts it: backend-…-pgjqd, 10.244.0.13'],
+      ['msg', 'kl', 'api', 'readiness check passed: 1/1'],
+      ['msg', 'api', 'sv', 'add this pod to the Service'],
+      ['self', 'sv', 'traffic reaches the new pod'],
     ],
   },
   monitoring: {
