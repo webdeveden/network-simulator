@@ -45,17 +45,18 @@ kubectl -n netsim exec deploy/redis -- redis-cli --scan --pattern '*'
 ## After changing code
 
 ```bash
-docker build -t netsim-backend:local backend
-kind load docker-image netsim-backend:local --name netsim
-kubectl -n netsim rollout restart deployment/backend
+sh k8s/deploy-local.sh
 ```
 
-If the change includes a migration, rerun the Job first:
+It builds both images tagged with the commit, loads them onto the node, runs the migrations, then does
+a rolling update. Go back to the previous version with:
 
 ```bash
-kubectl -n netsim delete job migrate --ignore-not-found
-kubectl apply -f k8s/31-migrate-job.yaml
+kubectl -n netsim rollout undo deployment/backend
+kubectl -n netsim rollout undo deployment/frontend
 ```
+
+The YAML files still say `:local`, so `kubectl apply -f k8s/` puts the version from the first run back.
 
 ## Stop and clean up
 
