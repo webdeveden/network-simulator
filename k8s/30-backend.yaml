@@ -42,6 +42,11 @@ spec:
             httpGet: { path: /api/health, port: 8000 }
             initialDelaySeconds: 10
             periodSeconds: 10
+          # A pod being removed leaves the Service at the same moment it's told to stop, and the
+          # nodes take a moment to notice. Waiting first means no request reaches it after it closes.
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }
           resources:
             requests: { cpu: 100m, memory: 128Mi }
             limits: { memory: 512Mi }
