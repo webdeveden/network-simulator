@@ -31,6 +31,10 @@ spec:
           readinessProbe:
             httpGet: { path: /, port: 80 }
             periodSeconds: 5
+          # Same reason as the backend: let the Service stop sending traffic before nginx stops
+          lifecycle:
+            preStop:
+              sleep: { seconds: 5 }
           resources:
             requests: { cpu: 50m, memory: 32Mi }
             limits: { memory: 128Mi }

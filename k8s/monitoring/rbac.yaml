@@ -1,0 +1,34 @@
+# Pods can't read the Kubernetes API by default. Prometheus needs to list the backend pods to find
+# them, so it gets its own identity (ServiceAccount) and a permission to do only that.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: netsim
+---
+# A Role only applies inside its own namespace, and only allows what's listed: reading pods in
+# netsim. No access to Secrets, to other namespaces, or to change anything.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-discovery
+  namespace: netsim
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+---
+# Connects the two: the prometheus ServiceAccount gets the Role's permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-discovery
+  namespace: netsim
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: netsim
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prometheus-discovery

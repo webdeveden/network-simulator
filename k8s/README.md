@@ -45,16 +45,37 @@ kubectl -n netsim exec deploy/redis -- redis-cli --scan --pattern '*'
 ## After changing code
 
 ```bash
-docker build -t netsim-backend:local backend
-kind load docker-image netsim-backend:local --name netsim
-kubectl -n netsim rollout restart deployment/backend
+sh k8s/deploy-local.sh
 ```
 
-If the change includes a migration, rerun the Job first:
+It builds both images tagged with the commit, loads them onto the node, runs the migrations, then does
+a rolling update. Go back to the previous version with:
 
 ```bash
-kubectl -n netsim delete job migrate --ignore-not-found
-kubectl apply -f k8s/31-migrate-job.yaml
+kubectl -n netsim rollout undo deployment/backend
+kubectl -n netsim rollout undo deployment/frontend
+```
+
+The YAML files still say `:local`, so `kubectl apply -f k8s/` puts the version from the first run back.
+
+## Monitoring (Prometheus and Grafana)
+
+```bash
+sh k8s/monitoring/apply.sh
+```
+
+Installs Prometheus, Grafana and the Redis and Postgres exporters. The alert rules and the dashboard come
+from `monitoring/`, the same files compose uses, so edit them there and run the script again.
+Prometheus finds each backend pod through the Kubernetes API (`k8s/monitoring/rbac.yaml` allows it to
+list pods in `netsim`), so pods added by a rollout are scraped without any change.
+
+Nothing is reachable from outside the cluster. Open them through a port-forward (3001 and 9091, so
+they don't clash with compose's 3000 and 9090):
+
+```bash
+kubectl -n netsim port-forward svc/grafana 3001:3000      # http://localhost:3001, user admin
+kubectl -n netsim port-forward svc/prometheus 9091:9090   # http://localhost:9091
+kubectl -n netsim get secret grafana-admin -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
 ## Stop and clean up

@@ -1,0 +1,88 @@
+# Exporters read Redis and Postgres stats and serve them as /metrics for Prometheus.
+# Same images and versions as docker-compose.yml.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-exporter
+  namespace: netsim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-exporter
+  template:
+    metadata:
+      labels:
+        app: redis-exporter
+    spec:
+      containers:
+        - name: redis-exporter
+          image: oliver006/redis_exporter:v1.74.0
+          env:
+            - name: REDIS_ADDR
+              value: redis://redis:6379
+          ports:
+            - containerPort: 9121
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-exporter
+  namespace: netsim
+spec:
+  selector:
+    app: redis-exporter
+  ports:
+    - port: 9121
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-exporter
+  namespace: netsim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-exporter
+  template:
+    metadata:
+      labels:
+        app: postgres-exporter
+    spec:
+      containers:
+        - name: postgres-exporter
+          image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+          # The login comes from the same Secret Postgres uses (create-secret.sh).
+          # $(POSTGRES_DB) is filled in by Kubernetes from the variable defined above it.
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef: { name: netsim-secrets, key: POSTGRES_DB }
+            - name: DATA_SOURCE_USER
+              valueFrom:
+                secretKeyRef: { name: netsim-secrets, key: POSTGRES_USER }
+            - name: DATA_SOURCE_PASS
+              valueFrom:
+                secretKeyRef: { name: netsim-secrets, key: POSTGRES_PASSWORD }
+            - name: DATA_SOURCE_URI
+              value: db:5432/$(POSTGRES_DB)?sslmode=disable
+          ports:
+            - containerPort: 9187
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-exporter
+  namespace: netsim
+spec:
+  selector:
+    app: postgres-exporter
+  ports:
+    - port: 9187

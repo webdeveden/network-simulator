@@ -1,0 +1,72 @@
+# Prometheus: scrapes the backend pods and the exporters, stores the numbers, checks alert rules.
+# Its config and rules come from the ConfigMap prometheus-config, built by apply.sh.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: netsim
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: netsim
+spec:
+  replicas: 1
+  # Two Prometheus pods can't share one data folder, so stop the old pod before starting the new
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      labels:
+        app: prometheus
+    spec:
+      serviceAccountName: prometheus   # the identity from rbac.yaml, used to list pods
+      containers:
+        - name: prometheus
+          image: prom/prometheus:v3.5.0
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=7d
+            - --web.enable-lifecycle
+          ports:
+            - containerPort: 9090
+          readinessProbe:
+            httpGet: { path: /-/ready, port: 9090 }
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: data
+          persistentVolumeClaim:
+            claimName: prometheus-data
+---
+# Grafana finds Prometheus at http://prometheus:9090, the same address as in compose
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: netsim
+spec:
+  selector:
+    app: prometheus
+  ports:
+    - port: 9090
