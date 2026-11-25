@@ -1,0 +1,46 @@
+# Prometheus config for Kubernetes. The compose version is monitoring/prometheus/prometheus.yml:
+# only the backend job differs, because there are now several backend pods to find.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml   # the same file compose uses, see k8s/monitoring/apply.sh
+
+scrape_configs:
+  # Each backend pod keeps its own counters, so each one is scraped directly. Scraping the
+  # backend Service would reach a different pod each time and mix their numbers up.
+  # Prometheus asks the Kubernetes API for the pod list (allowed by rbac.yaml) and keeps it
+  # up to date, so pods added by a rollout are found on their own.
+  - job_name: backend
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [netsim]
+    relabel_configs:
+      # Of all the pods in the namespace, keep only the backend ones
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        regex: backend
+        action: keep
+      # Pods that are still starting have nothing to scrape yet
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      # Name each target after its pod rather than its IP, which changes on every restart
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: instance
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+
+  # Exporters: one pod each, so their Service names work as in compose
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

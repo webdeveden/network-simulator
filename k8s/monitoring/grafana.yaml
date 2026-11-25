@@ -1,0 +1,71 @@
+# Grafana: draws the NetSim dashboard from Prometheus. The data source and dashboard are the same
+# files compose uses, delivered as ConfigMaps by apply.sh. Not reachable from outside the cluster:
+# open it with kubectl port-forward (see k8s/README.md).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: netsim
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:12.1.0
+          env:
+            - name: GF_SECURITY_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: grafana-admin, key: password }
+            - name: GF_USERS_ALLOW_SIGN_UP
+              value: "false"
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: /etc/grafana/dashboards/netsim.json
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            periodSeconds: 10
+          volumeMounts:
+            - name: datasources
+              mountPath: /etc/grafana/provisioning/datasources
+            - name: dashboard-providers
+              mountPath: /etc/grafana/provisioning/dashboards
+            - name: dashboards
+              mountPath: /etc/grafana/dashboards
+            # Settings changed in the UI are lost on restart. The dashboard itself is reloaded
+            # from the ConfigMap, so nothing important lives here.
+            - name: data
+              mountPath: /var/lib/grafana
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+      volumes:
+        - name: datasources
+          configMap:
+            name: grafana-datasources
+        - name: dashboard-providers
+          configMap:
+            name: grafana-dashboard-providers
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: netsim
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3000
